@@ -1,0 +1,13 @@
+# API keys and secrets — never commit these
+.env
+
+# Jupyter notebook checkpoints — auto-generated, not needed
+.ipynb_checkpoints/
+
+# Python cache files — auto-generated
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db

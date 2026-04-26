@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
+from datetime import datetime, timedelta
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
@@ -45,6 +45,15 @@ CHART_COLORS = [
     "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
     "#bcbd22", "#17becf"
 ]
+
+ACTION_MAP = {
+    "Reit":    "Reiterated",
+    "Main":    "Maintained",
+    "Up":      "Upgraded",
+    "Down":    "Downgraded",
+    "Init":    "Initiated",
+    "Assumed": "Assumed",
+}
 
 # ─── DATA FUNCTIONS ──────────────────────────────────────────
 
@@ -156,7 +165,91 @@ def get_comps_data(comp_tickers):
     return valid, invalid
 
 
-# ─── PLOTLY CHART (interactive) ──────────────────────────────
+# ─── ANALYST DATA ────────────────────────────────────────────
+
+def get_analyst_data(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+
+        # Price targets
+        targets = {}
+        try:
+            pt = stock.analyst_price_targets
+            if pt and isinstance(pt, dict):
+                targets = {
+                    "mean":   pt.get("mean"),
+                    "high":   pt.get("high"),
+                    "low":    pt.get("low"),
+                    "median": pt.get("median"),
+                }
+        except Exception:
+            pass
+
+        # Upgrade / downgrade history — last 3 months
+        recs_df = None
+        cutoff  = datetime.now() - timedelta(days=90)
+
+        try:
+            raw = stock.upgrades_downgrades
+            if raw is not None and not raw.empty:
+                raw = raw.copy()
+                if hasattr(raw.index, "tz") and raw.index.tz is not None:
+                    raw.index = raw.index.tz_convert(None)
+
+                raw = raw[raw.index >= cutoff]
+
+                if not raw.empty:
+                    raw = raw.reset_index()
+                    date_col   = next((c for c in raw.columns
+                                       if "date" in c.lower()), None)
+                    firm_col   = next((c for c in raw.columns
+                                       if "firm" in c.lower()), None)
+                    to_col     = next((c for c in raw.columns
+                                       if "tograde" in c.lower()
+                                       or "to grade" in c.lower()), None)
+                    from_col   = next((c for c in raw.columns
+                                       if "fromgrade" in c.lower()
+                                       or "from grade" in c.lower()), None)
+                    action_col = next((c for c in raw.columns
+                                       if "action" in c.lower()), None)
+
+                    if date_col and firm_col and to_col:
+                        raw_actions = (
+                            raw[action_col].str.capitalize()
+                            if action_col
+                            else pd.Series([""] * len(raw))
+                        )
+                        recs_df = pd.DataFrame({
+                            "Date":      pd.to_datetime(raw[date_col]).dt.date,
+                            "Firm":      raw[firm_col].str.strip(),
+                            "Rating":    raw[to_col].str.strip(),
+                            "FromGrade": (raw[from_col].str.strip()
+                                          if from_col else ""),
+                            "Action":    raw_actions.map(
+                                          lambda x: ACTION_MAP.get(x, x)
+                                         ),
+                        })
+                        recs_df = recs_df.sort_values(
+                            "Date", ascending=False
+                        ).reset_index(drop=True)
+
+        except Exception:
+            pass
+
+        return targets, recs_df
+
+    except Exception:
+        return {}, None
+
+
+def get_unique_firms(recs_df):
+    if recs_df is None or recs_df.empty:
+        return []
+    most_recent = recs_df.drop_duplicates(subset=["Firm"], keep="first")
+    return sorted(most_recent["Firm"].tolist())
+
+
+# ─── PLOTLY CHART ────────────────────────────────────────────
 
 def build_price_chart(subject_ticker, comp_tickers, period,
                       normalize, selected_indices=None):
@@ -221,22 +314,18 @@ def build_price_chart(subject_ticker, comp_tickers, period,
         yaxis_title=y_label,
         hovermode="x unified",
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
+            orientation="h", yanchor="bottom",
+            y=1.02, xanchor="right", x=1
         ),
         height=500,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
+        plot_bgcolor="white", paper_bgcolor="white",
         xaxis=dict(showgrid=True, gridcolor="#f0f0f0"),
         yaxis=dict(showgrid=True, gridcolor="#f0f0f0"),
     )
     return fig
 
 
-# ─── MATPLOTLIB CHART (for PDF) ──────────────────────────────
+# ─── MATPLOTLIB CHART (PDF) ──────────────────────────────────
 
 def build_pdf_chart(subject_ticker, comp_tickers, period,
                     normalize, selected_indices=None):
@@ -270,7 +359,6 @@ def build_pdf_chart(subject_ticker, comp_tickers, period,
     for i, (name, series) in enumerate(all_series.items()):
         is_subject = (name == subject_ticker)
         is_index   = (name in INDICES)
-
         try:
             x = series.index.tz_localize(None)
         except Exception:
@@ -279,14 +367,11 @@ def build_pdf_chart(subject_ticker, comp_tickers, period,
             except Exception:
                 x = series.index
 
-        ax.plot(
-            x, series.values,
-            label=name,
-            color=CHART_COLORS[i % len(CHART_COLORS)],
-            linewidth=2.5 if is_subject else 1.2,
-            linestyle="--" if is_index else "-",
-            zorder=3 if is_subject else 2
-        )
+        ax.plot(x, series.values, label=name,
+                color=CHART_COLORS[i % len(CHART_COLORS)],
+                linewidth=2.5 if is_subject else 1.2,
+                linestyle="--" if is_index else "-",
+                zorder=3 if is_subject else 2)
 
     ax.set_xlabel("Date", fontsize=8, fontfamily="sans-serif")
     y_label = "Indexed Price (Base = 100)" if normalize else "Price (USD)"
@@ -302,16 +387,11 @@ def build_pdf_chart(subject_ticker, comp_tickers, period,
     ax.tick_params(axis="y", labelsize=7)
     ax.grid(True, color="#e0e0e0", linewidth=0.5, linestyle="-")
     ax.set_axisbelow(True)
-
     for spine in ax.spines.values():
         spine.set_edgecolor("#cccccc")
         spine.set_linewidth(0.5)
-
-    ax.legend(
-        fontsize=7, loc="upper left",
-        framealpha=0.9, edgecolor="#cccccc",
-        ncol=min(len(all_series), 4)
-    )
+    ax.legend(fontsize=7, loc="upper left", framealpha=0.9,
+              edgecolor="#cccccc", ncol=min(len(all_series), 4))
 
     plt.tight_layout()
     buf = io.BytesIO()
@@ -326,17 +406,15 @@ def build_pdf_chart(subject_ticker, comp_tickers, period,
 
 def generate_pdf(report, subject_fund, comps_data,
                  comp_tickers, chart_period, normalize,
-                 selected_indices=None):
+                 selected_indices=None,
+                 analyst_targets=None, analyst_recs=None,
+                 selected_firms=None):
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        leftMargin=0.2 * inch,
-        rightMargin=0.2 * inch,
-        topMargin=0.3 * inch,
-        bottomMargin=0.2 * inch,
+        buf, pagesize=letter,
+        leftMargin=0.2 * inch, rightMargin=0.2 * inch,
+        topMargin=0.3 * inch,  bottomMargin=0.2 * inch,
     )
-
     W = letter[0] - 0.4 * inch
 
     def style(name, **kwargs):
@@ -407,10 +485,8 @@ def generate_pdf(report, subject_fund, comps_data,
 
     # ── Header ────────────────────────────────────────────────
     rating_bg = {
-        "Strong Buy":  "#1a7f3c",
-        "Buy":         "#2e9e57",
-        "Hold":        "#b8860b",
-        "Sell":        "#c0392b",
+        "Strong Buy":  "#1a7f3c", "Buy": "#2e9e57",
+        "Hold": "#b8860b", "Sell": "#c0392b",
         "Strong Sell": "#922b21",
     }.get(report['ai_rating'], "#444444")
 
@@ -426,31 +502,26 @@ def generate_pdf(report, subject_fund, comps_data,
 
     story.append(KeepTogether([
         Paragraph(f"{report['company_name']} ({report['ticker']})", s_title),
-        Paragraph(
-            f"{report['sector']} &nbsp;|&nbsp; {report['industry']}", s_subtitle
-        ),
+        Paragraph(f"{report['sector']} &nbsp;|&nbsp; {report['industry']}",
+                  s_subtitle),
         Paragraph(
             f"Generated: {datetime.now().strftime('%B %d, %Y')} &nbsp;|&nbsp; "
-            f"AI-Generated Equity Research — Not Investment Advice", s_date
-        ),
+            f"AI-Generated Equity Research — Not Investment Advice", s_date),
         HRFlowable(width=W, thickness=1.5,
                    color=colors.HexColor("#111111"), spaceAfter=8),
         rating_tbl,
         Spacer(1, 6),
         Paragraph(report['one_line_summary'], s_oneliner),
-        Paragraph(
-            f"<i>Rationale: {report['ai_rating_rationale']}</i>", s_rationale
-        ),
+        Paragraph(f"<i>Rationale: {report['ai_rating_rationale']}</i>",
+                  s_rationale),
         HRFlowable(width=W, thickness=0.3,
                    color=colors.HexColor("#cccccc"), spaceAfter=6),
     ]))
 
     # ── Performance ───────────────────────────────────────────
-    perf_headers = [
-        "Current Price", "1-Year Return",
-        "5-Year Return", "Market Cap", "52-Week Range"
-    ]
-    perf_values = [
+    perf_headers = ["Current Price", "1-Year Return", "5-Year Return",
+                    "Market Cap", "52-Week Range"]
+    perf_values  = [
         f"${report['current_price']:.2f}",
         f"{report['one_year_return_pct']:.1f}%",
         f"{report['five_year_return_pct']:.1f}%",
@@ -458,16 +529,13 @@ def generate_pdf(report, subject_fund, comps_data,
         f"{report['fifty_two_week_low']} – {report['fifty_two_week_high']}"
     ]
     col_w    = W / len(perf_headers)
-    perf_tbl = Table(
-        [perf_headers, perf_values],
-        colWidths=[col_w] * len(perf_headers)
-    )
+    perf_tbl = Table([perf_headers, perf_values],
+                     colWidths=[col_w] * len(perf_headers))
     perf_tbl.setStyle(perf_table_style())
 
     story.append(KeepTogether([
         Paragraph("PRICE &amp; PERFORMANCE", s_section),
-        perf_tbl,
-        Spacer(1, 8),
+        perf_tbl, Spacer(1, 8),
         HRFlowable(width=W, thickness=0.3,
                    color=colors.HexColor("#cccccc"), spaceAfter=4),
     ]))
@@ -497,11 +565,8 @@ def generate_pdf(report, subject_fund, comps_data,
     half     = W / 2 - 0.1 * inch
     val_tbl  = make_fund_table(val_rows,  [half * 0.65, half * 0.35])
     qual_tbl = make_fund_table(qual_rows, [half * 0.65, half * 0.35])
-
-    fund_layout = Table(
-        [[val_tbl, qual_tbl]],
-        colWidths=[half, half], hAlign="LEFT"
-    )
+    fund_layout = Table([[val_tbl, qual_tbl]],
+                        colWidths=[half, half], hAlign="LEFT")
     fund_layout.setStyle(TableStyle([
         ("VALIGN",      (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -510,8 +575,7 @@ def generate_pdf(report, subject_fund, comps_data,
 
     story.append(KeepTogether([
         Paragraph("TOP 10 VALUE INVESTOR FUNDAMENTALS", s_section),
-        fund_layout,
-        Spacer(1, 8),
+        fund_layout, Spacer(1, 8),
         HRFlowable(width=W, thickness=0.3,
                    color=colors.HexColor("#cccccc"), spaceAfter=4),
     ]))
@@ -522,7 +586,6 @@ def generate_pdf(report, subject_fund, comps_data,
         report['ticker'], comp_tickers, period_code,
         normalize, selected_indices
     )
-
     chart_elements = [Paragraph("PRICE HISTORY", s_section)]
     if chart_bytes:
         chart_buf = io.BytesIO(chart_bytes)
@@ -530,13 +593,11 @@ def generate_pdf(report, subject_fund, comps_data,
         chart_elements.append(chart_img)
         chart_elements.append(Paragraph(
             "Dashed lines = market indices (shown only if selected in app).",
-            s_small
-        ))
-    chart_elements.append(Spacer(1, 8))
-    chart_elements.append(HRFlowable(
-        width=W, thickness=0.3,
-        color=colors.HexColor("#cccccc"), spaceAfter=4
-    ))
+            s_small))
+    chart_elements += [Spacer(1, 8),
+                       HRFlowable(width=W, thickness=0.3,
+                                  color=colors.HexColor("#cccccc"),
+                                  spaceAfter=4)]
     story.append(KeepTogether(chart_elements))
 
     # ── Comps ─────────────────────────────────────────────────
@@ -545,18 +606,17 @@ def generate_pdf(report, subject_fund, comps_data,
         all_data    = {report['ticker']: subject_fund, **comps_data}
 
         metric_keys = [
-            ("Trailing P/E",   "1_trailing_pe"),
-            ("Forward P/E",    "2_forward_pe"),
-            ("EV/EBITDA",      "3_ev_ebitda"),
-            ("Price/Book",     "4_price_to_book"),
-            ("Price/FCF",      "5_price_to_fcf"),
-            ("Oper. Margin",   "6_operating_margin"),
-            ("ROE",            "7_return_on_equity"),
-            ("Rev. Growth",    "8_revenue_growth"),
-            ("Debt/Equity",    "9_debt_to_equity"),
-            ("FCF Yield",      "10_fcf_yield"),
+            ("Trailing P/E",  "1_trailing_pe"),
+            ("Forward P/E",   "2_forward_pe"),
+            ("EV/EBITDA",     "3_ev_ebitda"),
+            ("Price/Book",    "4_price_to_book"),
+            ("Price/FCF",     "5_price_to_fcf"),
+            ("Oper. Margin",  "6_operating_margin"),
+            ("ROE",           "7_return_on_equity"),
+            ("Rev. Growth",   "8_revenue_growth"),
+            ("Debt/Equity",   "9_debt_to_equity"),
+            ("FCF Yield",     "10_fcf_yield"),
         ]
-
         comp_header = ["Metric"] + [
             f"*{t}" if t == report['ticker'] else t
             for t in all_tickers
@@ -570,9 +630,9 @@ def generate_pdf(report, subject_fund, comps_data,
             comp_rows.append(row)
 
         comp_data_full = [comp_header] + comp_rows
-        n_comps        = len(all_tickers)
-        metric_col     = 1.1 * inch
-        ticker_col     = (W - metric_col) / n_comps
+        n_comps    = len(all_tickers)
+        metric_col = 1.1 * inch
+        ticker_col = (W - metric_col) / n_comps
 
         style_cmds = [
             ("BACKGROUND",    (0, 0), (-1, 0), colors.HexColor("#111111")),
@@ -595,11 +655,8 @@ def generate_pdf(report, subject_fund, comps_data,
             style_cmds.append(
                 ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#f9f9f9"))
             )
-
-        comp_tbl = Table(
-            comp_data_full,
-            colWidths=[metric_col] + [ticker_col] * n_comps
-        )
+        comp_tbl = Table(comp_data_full,
+                         colWidths=[metric_col] + [ticker_col] * n_comps)
         comp_tbl.setStyle(TableStyle(style_cmds))
 
         story.append(KeepTogether([
@@ -610,6 +667,105 @@ def generate_pdf(report, subject_fund, comps_data,
             HRFlowable(width=W, thickness=0.3,
                        color=colors.HexColor("#cccccc"), spaceAfter=4),
         ]))
+
+    # ── Analyst Recommendations ───────────────────────────────
+    has_targets = analyst_targets and any(
+        v for v in analyst_targets.values() if v
+    )
+    has_recs = (analyst_recs is not None and not analyst_recs.empty)
+
+    if has_targets or has_recs:
+        analyst_elements = [Paragraph("ANALYST RECOMMENDATIONS", s_section)]
+
+        if has_targets:
+            current = report['current_price']
+            mean_t  = analyst_targets.get("mean")
+            high_t  = analyst_targets.get("high")
+            low_t   = analyst_targets.get("low")
+            med_t   = analyst_targets.get("median")
+
+            def fmt_target(val):
+                return f"${val:.2f}" if val else "N/A"
+
+            def fmt_updown(val):
+                if not val or not current:
+                    return ""
+                pct = ((val - current) / current) * 100
+                return f"({pct:+.1f}%)"
+
+            pt_headers = ["Mean Target", "Upside/Downside",
+                          "High Target", "Low Target", "Median Target"]
+            pt_values  = [
+                fmt_target(mean_t), fmt_updown(mean_t),
+                fmt_target(high_t), fmt_target(low_t), fmt_target(med_t),
+            ]
+            pt_col_w = W / len(pt_headers)
+            pt_tbl   = Table([pt_headers, pt_values],
+                             colWidths=[pt_col_w] * len(pt_headers))
+            pt_tbl.setStyle(perf_table_style())
+            analyst_elements.append(pt_tbl)
+            analyst_elements.append(Paragraph(
+                "Price targets represent the aggregate of all price targets "
+                "submitted by analysts to Yahoo Finance.",
+                s_small
+            ))
+            analyst_elements.append(Spacer(1, 6))
+
+        if has_recs:
+            filtered = analyst_recs.copy()
+            if selected_firms:
+                filtered = filtered[filtered["Firm"].isin(selected_firms)]
+
+            if not filtered.empty:
+                rec_header = ["Date", "Firm", "Rating", "Action"]
+                rec_rows   = []
+                for _, row in filtered.iterrows():
+                    rec_rows.append([
+                        str(row["Date"]),
+                        row["Firm"],
+                        row["Rating"],
+                        row["Action"],
+                    ])
+
+                rec_data   = [rec_header] + rec_rows
+                col_widths = [
+                    0.9 * inch, W * 0.35, W * 0.30, W * 0.20,
+                ]
+                rec_tbl = Table(rec_data, colWidths=col_widths)
+                rec_style = [
+                    ("BACKGROUND",   (0, 0), (-1, 0), colors.HexColor("#111111")),
+                    ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE",     (0, 0), (-1, 0), 8),
+                    ("FONTNAME",     (0, 1), (-1, -1), "Helvetica"),
+                    ("FONTSIZE",     (0, 1), (-1, -1), 8),
+                    ("ALIGN",        (0, 0), (-1, -1), "LEFT"),
+                    ("GRID",         (0, 0), (-1, -1), 0.3,
+                                     colors.HexColor("#dddddd")),
+                    ("TOPPADDING",   (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING",(0, 0), (-1, -1), 3),
+                    ("LEFTPADDING",  (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ]
+                for i in range(2, len(rec_data), 2):
+                    rec_style.append(
+                        ("BACKGROUND", (0, i), (-1, i),
+                         colors.HexColor("#f7f7f7"))
+                    )
+                rec_tbl.setStyle(TableStyle(rec_style))
+                analyst_elements.append(rec_tbl)
+                analyst_elements.append(Paragraph(
+                    "Ratings shown as reported by each firm. "
+                    "Last 3 months only. Source: Yahoo Finance.",
+                    s_small
+                ))
+
+        analyst_elements += [
+            Spacer(1, 8),
+            HRFlowable(width=W, thickness=0.3,
+                       color=colors.HexColor("#cccccc"), spaceAfter=4),
+        ]
+        story.append(KeepTogether(analyst_elements))
 
     # ── Thesis ────────────────────────────────────────────────
     story.append(KeepTogether([
@@ -633,10 +789,10 @@ def generate_pdf(report, subject_fund, comps_data,
 
     # ── Disclaimer ────────────────────────────────────────────
     story.append(Paragraph(
-        "DISCLAIMER: This report is AI-generated for informational purposes only. "
-        "It does not constitute investment advice. All data sourced from Yahoo Finance "
-        "with a 15-minute delay. Verify all figures independently before making any "
-        "investment decisions.",
+        "DISCLAIMER: This report is AI-generated for informational purposes "
+        "only. It does not constitute investment advice. All data sourced from "
+        "Yahoo Finance with a 15-minute delay. Verify all figures independently "
+        "before making any investment decisions.",
         s_small
     ))
 
@@ -697,7 +853,7 @@ def execute_tool(name, inputs):
 
 def gather_market_data(ticker, status):
     system_prompt = """You are a quantitative equity research analyst.
-    Gather ALL of the following for the given ticker — do not skip any:
+    Gather ALL of the following — do not skip any:
       1. Current price
       2. 1-year historical return
       3. 5-year historical return
@@ -830,7 +986,9 @@ def generate_research_report(ticker, conversation_history, data_summary, status)
 
 # ─── TEXT FORMATTER ──────────────────────────────────────────
 
-def build_report_text(r, subject_fundamentals=None, comps_data=None):
+def build_report_text(r, subject_fundamentals=None, comps_data=None,
+                      analyst_targets=None, analyst_recs=None,
+                      selected_firms=None):
     W    = 60
     div  = "=" * W
     thin = "-" * W
@@ -868,7 +1026,6 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None):
         all_data    = {r['ticker']: subject_fundamentals, **comps_data}
         total_w     = LABEL_W + (COL_W * len(all_tickers))
         thin2       = "  " + "-" * total_w
-
         METRICS = [
             ("VALUATION",        None),
             ("1. Trailing P/E",  "1_trailing_pe"),
@@ -884,16 +1041,14 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None):
             ("9. Debt / Equity", "9_debt_to_equity"),
             ("10. FCF Yield",    "10_fcf_yield"),
         ]
-
         header = f"  {'METRIC':<{LABEL_W}}"
         names  = f"  {'':<{LABEL_W}}"
         for t in all_tickers:
             label = f"[{t}]" if t == r['ticker'] else t
-            name  = all_data[t].get("company_name", t)[:10] \
-                    if all_data.get(t) else t
+            name  = (all_data[t].get("company_name", t)[:10]
+                     if all_data.get(t) else t)
             header += f"{label:>{COL_W}}"
             names  += f"{name:>{COL_W}}"
-
         comp_block = f"\n{thin2}\n{header}\n{names}\n{thin2}"
         for label, key in METRICS:
             if key is None:
@@ -906,9 +1061,39 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None):
                 row_str += f"{val:>{COL_W}}"
             comp_block += row_str
         comp_block += f"\n{thin2}"
-
         output += f"\n{div}\n  COMPARABLE COMPANIES ANALYSIS"
         output += comp_block
+
+    if analyst_targets and any(v for v in analyst_targets.values() if v):
+        current = r['current_price']
+        mean_t  = analyst_targets.get("mean")
+        output += f"\n{div}\n  ANALYST RECOMMENDATIONS\n{thin}"
+        output += (
+            "\n  Price targets represent the aggregate of all price targets "
+            "submitted by analysts to Yahoo Finance.\n"
+        )
+        if mean_t and current:
+            upside = ((mean_t - current) / current) * 100
+            output += f"\n  {'Mean Price Target:':<24}${mean_t:.2f} ({upside:+.1f}%)"
+        if analyst_targets.get("high"):
+            output += f"\n  {'High Target:':<24}${analyst_targets['high']:.2f}"
+        if analyst_targets.get("low"):
+            output += f"\n  {'Low Target:':<24}${analyst_targets['low']:.2f}"
+        if analyst_targets.get("median"):
+            output += f"\n  {'Median Target:':<24}${analyst_targets['median']:.2f}"
+
+    if analyst_recs is not None and not analyst_recs.empty:
+        filtered = analyst_recs.copy()
+        if selected_firms:
+            filtered = filtered[filtered["Firm"].isin(selected_firms)]
+        if not filtered.empty:
+            output += f"\n\n  {'Date':<12}{'Firm':<30}{'Rating':<20}Action"
+            output += f"\n  {'-'*70}"
+            for _, row_data in filtered.iterrows():
+                output += (f"\n  {str(row_data['Date']):<12}"
+                           f"{row_data['Firm']:<30}"
+                           f"{row_data['Rating']:<20}"
+                           f"{row_data['Action']}")
 
     output += f"""
 {div}
@@ -918,34 +1103,30 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None):
 {div}
   KEY RISKS
 {thin}"""
-
     for i, risk in enumerate(r['key_risks'], 1):
         output += f"\n  {i}. {risk}"
-
     output += f"""
 {div}
   DISCLAIMER: AI-generated. Not investment advice.
   Verify all data independently before making decisions.
 {div}"""
-
     return output
 
 
 # ─── RENDER FUNCTION ─────────────────────────────────────────
 
 def render_report(report, subject_fund, comps_data, comp_tickers,
-                  chart_period, normalize, selected_indices=None):
+                  chart_period, normalize, selected_indices=None,
+                  analyst_targets=None, analyst_recs=None,
+                  selected_firms=None):
 
     period_code = PERIOD_MAP[chart_period]
-
     st.divider()
 
+    # Rating + headline
     rating_colors = {
-        "Strong Buy":  "🟢",
-        "Buy":         "🟩",
-        "Hold":        "🟡",
-        "Sell":        "🟠",
-        "Strong Sell": "🔴"
+        "Strong Buy":  "🟢", "Buy": "🟩",
+        "Hold": "🟡", "Sell": "🟠", "Strong Sell": "🔴"
     }
     emoji = rating_colors.get(report['ai_rating'], "⚪")
 
@@ -960,9 +1141,9 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
 
     st.info(f"**{report['one_line_summary']}**")
     st.caption(f"Rating rationale: {report['ai_rating_rationale']}")
-
     st.divider()
 
+    # Performance
     st.subheader("Price & Performance")
     p1, p2, p3, p4, p5 = st.columns(5)
     p1.metric("Current Price",  f"${report['current_price']:.2f}")
@@ -971,9 +1152,9 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     p4.metric("Market Cap",     report['market_cap'])
     p5.metric("52-Wk Range",
               f"{report['fifty_two_week_low']} – {report['fifty_two_week_high']}")
-
     st.divider()
 
+    # Chart
     st.subheader("📊 Price History")
     with st.spinner("Loading chart..."):
         fig = build_price_chart(
@@ -983,26 +1164,22 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
             normalize=normalize,
             selected_indices=selected_indices
         )
-
     if fig:
         if not normalize:
             st.caption(
-                "💡 Tip: Index prices are much higher than most stocks. "
-                "Toggle **Normalize to 100** in the sidebar for "
-                "apples-to-apples comparison."
+                "💡 Tip: Toggle **Normalize to 100** in the sidebar for "
+                "apples-to-apples comparison across different price levels."
             )
         st.plotly_chart(fig, use_container_width=True)
         st.caption(
-            "Click legend items to show/hide series. "
-            "Indices shown as dotted lines. "
-            "Double-click to isolate a series."
+            "Click legend items to show/hide. "
+            "Indices = dotted lines. Double-click to isolate."
         )
     else:
         st.warning("Could not load chart data.")
-
     st.divider()
 
-    # ── Fundamentals tables (st.dataframe fixes the "10." issue) ──
+    # Fundamentals
     st.subheader("Top 10 Value Investor Fundamentals")
     fund_c1, fund_c2 = st.columns(2)
 
@@ -1021,8 +1198,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
                     report['price_to_fcf']
                 ]
             }),
-            hide_index=True,
-            use_container_width=True
+            hide_index=True, use_container_width=True
         )
 
     with fund_c2:
@@ -1040,15 +1216,13 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
                     report['fcf_yield']
                 ]
             }),
-            hide_index=True,
-            use_container_width=True
+            hide_index=True, use_container_width=True
         )
 
-    # ── Comps tables ──────────────────────────────────────────
+    # Comps
     if comps_data:
         st.divider()
         st.subheader("Comparable Companies Analysis")
-
         all_tickers = [report['ticker']] + list(comps_data.keys())
         all_data    = {report['ticker']: subject_fund, **comps_data}
 
@@ -1081,23 +1255,81 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
         comp_c1, comp_c2 = st.columns(2)
         with comp_c1:
             st.markdown("**Valuation**")
-            st.dataframe(
-                build_comp_df(metrics_val),
-                hide_index=True,
-                use_container_width=True
-            )
+            st.dataframe(build_comp_df(metrics_val),
+                         hide_index=True, use_container_width=True)
         with comp_c2:
             st.markdown("**Quality & Growth**")
-            st.dataframe(
-                build_comp_df(metrics_qual),
-                hide_index=True,
-                use_container_width=True
+            st.dataframe(build_comp_df(metrics_qual),
+                         hide_index=True, use_container_width=True)
+        st.caption(f"★ = subject company ({report['ticker']})")
+
+    # ── Analyst Recommendations ───────────────────────────────
+    has_targets = analyst_targets and any(
+        v for v in analyst_targets.values() if v
+    )
+    has_recs = (analyst_recs is not None and not analyst_recs.empty)
+
+    if has_targets or has_recs:
+        st.divider()
+        st.subheader("🏦 Analyst Recommendations")
+        st.caption("Last 3 months | Source: Yahoo Finance | "
+                   "Ratings shown as reported by each firm")
+
+        if has_targets:
+            current = report['current_price']
+            mean_t  = analyst_targets.get("mean")
+            high_t  = analyst_targets.get("high")
+            low_t   = analyst_targets.get("low")
+            med_t   = analyst_targets.get("median")
+
+            def upside_str(val):
+                if not val or not current:
+                    return None
+                pct = ((val - current) / current) * 100
+                return f"{pct:+.1f}% vs current"
+
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("Mean Target",
+                      f"${mean_t:.2f}" if mean_t else "N/A",
+                      upside_str(mean_t))
+            a2.metric("High Target",
+                      f"${high_t:.2f}" if high_t else "N/A",
+                      upside_str(high_t))
+            a3.metric("Low Target",
+                      f"${low_t:.2f}" if low_t else "N/A",
+                      upside_str(low_t))
+            a4.metric("Median Target",
+                      f"${med_t:.2f}" if med_t else "N/A",
+                      upside_str(med_t))
+
+            st.caption(
+                "Price targets represent the aggregate of **all** price targets "
+                "submitted by analysts to Yahoo Finance."
             )
 
-        st.caption(f"★ = subject company ({report['ticker']})")
+        if has_recs:
+            filtered = analyst_recs.copy()
+            if selected_firms is not None:
+                filtered = filtered[filtered["Firm"].isin(selected_firms)]
+
+            if filtered.empty:
+                st.info(
+                    "No firms selected. Use the **Analyst Firms** buttons "
+                    "in the sidebar to filter."
+                )
+            else:
+                display_df = filtered[
+                    ["Date", "Firm", "Rating", "Action"]
+                ].copy()
+                display_df["Date"] = display_df["Date"].astype(str)
+                st.dataframe(display_df, hide_index=True,
+                             use_container_width=True)
+        elif has_targets:
+            st.info("No individual firm ratings available for this ticker.")
 
     st.divider()
 
+    # Thesis and risks
     thesis_col, risks_col = st.columns(2)
     with thesis_col:
         st.subheader("Investment Thesis")
@@ -1109,6 +1341,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
 
     st.divider()
 
+    # Downloads
     st.subheader("Download Report")
     date_str      = datetime.now().strftime('%Y%m%d')
     filename_stem = f"{report['ticker']}_research_{date_str}"
@@ -1116,7 +1349,10 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     dl_col1, dl_col2 = st.columns(2)
 
     with dl_col1:
-        report_text = build_report_text(report, subject_fund, comps_data)
+        report_text = build_report_text(
+            report, subject_fund, comps_data,
+            analyst_targets, analyst_recs, selected_firms
+        )
         st.download_button(
             label="⬇️ Download as .txt",
             data=report_text,
@@ -1130,7 +1366,8 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
             pdf_bytes = generate_pdf(
                 report, subject_fund, comps_data,
                 comp_tickers, chart_period, normalize,
-                selected_indices
+                selected_indices,
+                analyst_targets, analyst_recs, selected_firms
             )
         st.download_button(
             label="⬇️ Download as PDF",
@@ -1201,11 +1438,47 @@ with st.sidebar:
         use_container_width=True
     )
 
+    # Analyst firm buttons — appear after report is generated
+    if (st.session_state.get("report_ready")
+            and st.session_state.get("all_firms")):
+
+        st.divider()
+        st.subheader("🏦 Analyst Firms")
+        st.caption("Click to toggle firm recommendations")
+
+        sa_col, ca_col = st.columns(2)
+        with sa_col:
+            if st.button("Select All", use_container_width=True):
+                st.session_state.selected_firms = set(
+                    st.session_state.all_firms
+                )
+                st.rerun()
+        with ca_col:
+            if st.button("Clear All", use_container_width=True):
+                st.session_state.selected_firms = set()
+                st.rerun()
+
+        for firm in st.session_state.all_firms:
+            is_on = firm in st.session_state.selected_firms
+            label = f"✓  {firm}" if is_on else f"○  {firm}"
+            if st.button(
+                label,
+                key=f"firm_btn_{firm}",
+                type="primary" if is_on else "secondary",
+                use_container_width=True
+            ):
+                if is_on:
+                    st.session_state.selected_firms.discard(firm)
+                else:
+                    st.session_state.selected_firms.add(firm)
+                st.rerun()
+
     st.divider()
     st.caption("Built with Claude + yfinance + Plotly")
     st.caption("Yahoo Finance data — 15-min delay")
 
 
+# Derived state
 selected_indices = []
 if show_sp500:
     selected_indices.append("S&P 500")
@@ -1214,7 +1487,10 @@ if show_nasdaq:
 if show_dow:
     selected_indices.append("Dow Jones")
 
+selected_firms = st.session_state.get("selected_firms", None)
 
+
+# Main logic
 if generate_btn and ticker_input:
 
     with st.spinner(f"Validating {ticker_input}..."):
@@ -1238,8 +1514,7 @@ if generate_btn and ticker_input:
         if invalid_tickers:
             st.warning(
                 f"⚠️ Skipped invalid ticker(s): "
-                f"**{', '.join(invalid_tickers)}**. "
-                f"Please verify the symbols."
+                f"**{', '.join(invalid_tickers)}**."
             )
         comp_tickers = list(comps_data.keys())
 
@@ -1255,20 +1530,32 @@ if generate_btn and ticker_input:
         if not isinstance(subject_fund, dict):
             subject_fund = None
 
+        status.update(label="Fetching analyst recommendations...")
+        analyst_targets, analyst_recs = get_analyst_data(ticker_input)
+
         report = generate_research_report(
             ticker_input, history, summary, status
         )
 
-        st.session_state.report       = report
-        st.session_state.subject_fund = subject_fund
-        st.session_state.comps_data   = comps_data
-        st.session_state.comp_tickers = comp_tickers
+        st.session_state.report          = report
+        st.session_state.subject_fund    = subject_fund
+        st.session_state.comps_data      = comps_data
+        st.session_state.comp_tickers    = comp_tickers
+        st.session_state.analyst_targets = analyst_targets
+        st.session_state.analyst_recs    = analyst_recs
+
+        all_firms = get_unique_firms(analyst_recs)
+        st.session_state.all_firms       = all_firms
+        st.session_state.selected_firms  = set(all_firms)
+        st.session_state.report_ready    = True
 
         status.update(label="Report ready!", state="complete")
 
     render_report(
         report, subject_fund, comps_data, comp_tickers,
-        chart_period, normalize, selected_indices
+        chart_period, normalize, selected_indices,
+        analyst_targets, analyst_recs,
+        st.session_state.selected_firms
     )
 
 elif "report" in st.session_state and not generate_btn:
@@ -1277,9 +1564,10 @@ elif "report" in st.session_state and not generate_btn:
         st.session_state.subject_fund,
         st.session_state.comps_data,
         st.session_state.comp_tickers,
-        chart_period,
-        normalize,
-        selected_indices
+        chart_period, normalize, selected_indices,
+        st.session_state.get("analyst_targets"),
+        st.session_state.get("analyst_recs"),
+        st.session_state.get("selected_firms"),
     )
 
 else:

@@ -481,6 +481,19 @@ def generate_pdf(report, subject_fund, comps_data,
             ("BOTTOMPADDING",(0, 0), (-1, -1), 5),
         ])
 
+    def hr(thickness=0.3, color="#cccccc", space_after=4):
+        """Horizontal rule as a full-width Table so it always spans exactly W."""
+        tbl = Table([['']], colWidths=[W], rowHeights=[thickness])
+        tbl.setStyle(TableStyle([
+            ('BACKGROUND',    (0,0), (0,0), colors.HexColor(color)),
+            ('TOPPADDING',    (0,0), (0,0), 0),
+            ('BOTTOMPADDING', (0,0), (0,0), 0),
+            ('LEFTPADDING',   (0,0), (0,0), 0),
+            ('RIGHTPADDING',  (0,0), (0,0), 0),
+        ]))
+        tbl.spaceAfter = space_after
+        return tbl
+
     story = []
 
     # ── Header ────────────────────────────────────────────────
@@ -490,15 +503,50 @@ def generate_pdf(report, subject_fund, comps_data,
         "Strong Sell": "#922b21",
     }.get(report['ai_rating'], "#444444")
 
-    rating_tbl = Table(
-        [[Paragraph(f"AI RATING: {report['ai_rating'].upper()}", s_rating)]],
-        colWidths=[2.5 * inch]
-    )
-    rating_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), colors.HexColor(rating_bg)),
-        ("TOPPADDING",    (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
+    # Compute analyst consensus counts for the header badge
+    _pdf_show_cons = False
+    _pdf_n_bull = _pdf_n_neut = _pdf_n_bear = 0
+    if analyst_recs is not None and not analyst_recs.empty:
+        _pdf_cf = analyst_recs.copy()
+        if selected_firms is not None:
+            _pdf_cf = _pdf_cf[_pdf_cf["Firm"].isin(selected_firms)]
+        if not _pdf_cf.empty:
+            _bull_kws = {"buy", "outperform", "overweight", "strong buy"}
+            _neut_kws = {"hold", "neutral", "equal weight", "equal-weight",
+                         "market perform", "sector perform", "in-line", "sector weight"}
+            _bear_kws = {"sell", "underperform", "underweight", "strong sell"}
+            _rv = _pdf_cf["Rating"].str.lower().str.strip()
+            _pdf_n_bull = int(_rv.apply(lambda r: any(k in r for k in _bull_kws)).sum())
+            _pdf_n_neut = int(_rv.apply(lambda r: any(k in r for k in _neut_kws)).sum())
+            _pdf_n_bear = int(_rv.apply(lambda r: any(k in r for k in _bear_kws)).sum())
+            _pdf_show_cons = True
+
+    if _pdf_show_cons:
+        cons_str = (f"{_pdf_n_bull} Bullish  |  "
+                    f"{_pdf_n_neut} Neutral  |  "
+                    f"{_pdf_n_bear} Bearish")
+        rating_tbl = Table(
+            [[Paragraph(f"AI Rating: {report['ai_rating']}", s_rating),
+              Paragraph(f"ANALYST CONSENSUS:   {cons_str}", s_rating)]],
+            colWidths=[2.5 * inch, W - 2.5 * inch]
+        )
+        rating_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (0, 0), colors.HexColor(rating_bg)),
+            ("BACKGROUND",    (1, 0), (1, 0), colors.HexColor("#2c3e50")),
+            ("TOPPADDING",    (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING",   (1, 0), (1, 0), 14),
+        ]))
+    else:
+        rating_tbl = Table(
+            [[Paragraph(f"AI Rating: {report['ai_rating']}", s_rating)]],
+            colWidths=[2.5 * inch]
+        )
+        rating_tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), colors.HexColor(rating_bg)),
+            ("TOPPADDING",    (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
 
     story.append(KeepTogether([
         Paragraph(f"{report['company_name']} ({report['ticker']})", s_title),
@@ -507,15 +555,13 @@ def generate_pdf(report, subject_fund, comps_data,
         Paragraph(
             f"Generated: {datetime.now().strftime('%B %d, %Y')} &nbsp;|&nbsp; "
             f"AI-Generated Equity Research — Not Investment Advice", s_date),
-        HRFlowable(width=W, thickness=1.5,
-                   color=colors.HexColor("#111111"), spaceAfter=8),
+        hr(thickness=1.5, color="#111111", space_after=8),
         rating_tbl,
         Spacer(1, 6),
         Paragraph(report['one_line_summary'], s_oneliner),
         Paragraph(f"<i>Rationale: {report['ai_rating_rationale']}</i>",
                   s_rationale),
-        HRFlowable(width=W, thickness=0.3,
-                   color=colors.HexColor("#cccccc"), spaceAfter=6),
+        hr(space_after=6),
     ]))
 
     # ── Performance ───────────────────────────────────────────
@@ -536,8 +582,7 @@ def generate_pdf(report, subject_fund, comps_data,
     story.append(KeepTogether([
         Paragraph("PRICE &amp; PERFORMANCE", s_section),
         perf_tbl, Spacer(1, 8),
-        HRFlowable(width=W, thickness=0.3,
-                   color=colors.HexColor("#cccccc"), spaceAfter=4),
+        hr(),
     ]))
 
     # ── Fundamentals ──────────────────────────────────────────
@@ -562,22 +607,23 @@ def generate_pdf(report, subject_fund, comps_data,
         tbl.setStyle(header_table_style(len(data)))
         return tbl
 
-    half     = W / 2 - 0.1 * inch
-    val_tbl  = make_fund_table(val_rows,  [half * 0.65, half * 0.35])
+    half     = W / 2
+    gap      = 6  # points between the two side-by-side tables
+    val_tbl  = make_fund_table(val_rows,  [(half - gap) * 0.65, (half - gap) * 0.35])
     qual_tbl = make_fund_table(qual_rows, [half * 0.65, half * 0.35])
     fund_layout = Table([[val_tbl, qual_tbl]],
-                        colWidths=[half, half], hAlign="LEFT")
+                        colWidths=[half, half])
     fund_layout.setStyle(TableStyle([
-        ("VALIGN",      (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING",(0, 0), (-1, -1), 8),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING",  (0, 0), (0, -1),  gap),
     ]))
 
     story.append(KeepTogether([
         Paragraph("TOP 10 VALUE INVESTOR FUNDAMENTALS", s_section),
         fund_layout, Spacer(1, 8),
-        HRFlowable(width=W, thickness=0.3,
-                   color=colors.HexColor("#cccccc"), spaceAfter=4),
+        hr(),
     ]))
 
     # ── Chart ─────────────────────────────────────────────────
@@ -595,9 +641,7 @@ def generate_pdf(report, subject_fund, comps_data,
             "Dashed lines = market indices (shown only if selected in app).",
             s_small))
     chart_elements += [Spacer(1, 8),
-                       HRFlowable(width=W, thickness=0.3,
-                                  color=colors.HexColor("#cccccc"),
-                                  spaceAfter=4)]
+                       hr()]
     story.append(KeepTogether(chart_elements))
 
     # ── Comps ─────────────────────────────────────────────────
@@ -648,7 +692,6 @@ def generate_pdf(report, subject_fund, comps_data,
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ("LEFTPADDING",   (0, 0), (-1, -1), 4),
             ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
-            ("BACKGROUND",    (1, 1), (1, -1), colors.HexColor("#f0f0f0")),
             ("FONTNAME",      (1, 1), (1, -1), "Helvetica-Bold"),
         ]
         for i in range(2, len(comp_data_full), 2):
@@ -664,8 +707,7 @@ def generate_pdf(report, subject_fund, comps_data,
             comp_tbl,
             Paragraph(f"* = subject company ({report['ticker']})", s_small),
             Spacer(1, 8),
-            HRFlowable(width=W, thickness=0.3,
-                       color=colors.HexColor("#cccccc"), spaceAfter=4),
+            hr(),
         ]))
 
     # ── Analyst Recommendations ───────────────────────────────
@@ -728,9 +770,9 @@ def generate_pdf(report, subject_fund, comps_data,
                     ])
 
                 rec_data   = [rec_header] + rec_rows
-                col_widths = [
-                    0.9 * inch, W * 0.35, W * 0.30, W * 0.20,
-                ]
+                _date_w    = 0.9 * inch
+                _rest      = W - _date_w
+                col_widths = [_date_w, _rest * 0.42, _rest * 0.33, _rest * 0.25]
                 rec_tbl = Table(rec_data, colWidths=col_widths)
                 rec_style = [
                     ("BACKGROUND",   (0, 0), (-1, 0), colors.HexColor("#111111")),
@@ -762,8 +804,7 @@ def generate_pdf(report, subject_fund, comps_data,
 
         analyst_elements += [
             Spacer(1, 8),
-            HRFlowable(width=W, thickness=0.3,
-                       color=colors.HexColor("#cccccc"), spaceAfter=4),
+            hr(),
         ]
         story.append(KeepTogether(analyst_elements))
 
@@ -772,8 +813,7 @@ def generate_pdf(report, subject_fund, comps_data,
         Paragraph("INVESTMENT THESIS", s_section),
         Paragraph(report['investment_thesis'], s_body),
         Spacer(1, 8),
-        HRFlowable(width=W, thickness=0.3,
-                   color=colors.HexColor("#cccccc"), spaceAfter=4),
+        hr(),
     ]))
 
     # ── Risks ─────────────────────────────────────────────────
@@ -782,8 +822,7 @@ def generate_pdf(report, subject_fund, comps_data,
         risks_elements.append(Paragraph(f"<b>{i}.</b> {risk}", s_body))
     risks_elements += [
         Spacer(1, 10),
-        HRFlowable(width=W, thickness=0.3,
-                   color=colors.HexColor("#cccccc"), spaceAfter=4),
+        hr(),
     ]
     story.append(KeepTogether(risks_elements))
 
@@ -1005,7 +1044,7 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
   {r['sector']} | {r['industry']}
   Generated: {datetime.now().strftime('%B %d, %Y')}
 {thin}
-  AI RATING: {r['ai_rating'].upper()}
+  AI Rating: {r['ai_rating']}
   {r['one_line_summary']}
 
   Rationale: {r['ai_rating_rationale']}
@@ -1130,14 +1169,41 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     }
     emoji = rating_colors.get(report['ai_rating'], "⚪")
 
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # Pre-compute analyst consensus so it can sit alongside AI Rating in the header
+    _show_cons = False
+    _n_bull = _n_neut = _n_bear = 0
+    if analyst_recs is not None and not analyst_recs.empty:
+        _cf = analyst_recs.copy()
+        if selected_firms is not None:
+            _cf = _cf[_cf["Firm"].isin(selected_firms)]
+        if not _cf.empty:
+            _bull_kws = {"buy", "outperform", "overweight", "strong buy"}
+            _neut_kws = {"hold", "neutral", "equal weight", "equal-weight",
+                         "market perform", "sector perform", "in-line", "sector weight"}
+            _bear_kws = {"sell", "underperform", "underweight", "strong sell"}
+            _rv = _cf["Rating"].str.lower().str.strip()
+            _n_bull = int(_rv.apply(lambda r: any(k in r for k in _bull_kws)).sum())
+            _n_neut = int(_rv.apply(lambda r: any(k in r for k in _neut_kws)).sum())
+            _n_bear = int(_rv.apply(lambda r: any(k in r for k in _bear_kws)).sum())
+            _show_cons = True
+
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 3])
     with col1:
         st.subheader(f"{report['company_name']} ({report['ticker']})")
         st.caption(f"{report['sector']} | {report['industry']}")
     with col2:
-        st.metric("AI Rating", f"{emoji} {report['ai_rating']}")
+        st.caption("AI Rating")
+        st.subheader(f"{emoji} {report['ai_rating']}")
     with col3:
-        st.metric("Current Price", f"${report['current_price']:.2f}")
+        st.caption("Current Price")
+        st.subheader(f"${report['current_price']:.2f}")
+    with col4:
+        if _show_cons:
+            st.caption("Analyst Consensus")
+            _ca, _cb, _cc = st.columns(3)
+            _ca.subheader(f"🟢 {_n_bull} Bullish")
+            _cb.subheader(f"🟡 {_n_neut} Neutral")
+            _cc.subheader(f"🔴 {_n_bear} Bearish")
 
     st.info(f"**{report['one_line_summary']}**")
     st.caption(f"Rating rationale: {report['ai_rating_rationale']}")
@@ -1146,16 +1212,25 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     # Performance
     st.subheader("Price & Performance")
     p1, p2, p3, p4, p5 = st.columns(5)
-    p1.metric("Current Price",  f"${report['current_price']:.2f}")
-    p2.metric("1-Year Return",  f"{report['one_year_return_pct']:.1f}%")
-    p3.metric("5-Year Return",  f"{report['five_year_return_pct']:.1f}%")
-    p4.metric("Market Cap",     report['market_cap'])
-    p5.metric("52-Wk Range",
-              f"{report['fifty_two_week_low']} – {report['fifty_two_week_high']}")
+    with p1:
+        st.caption("Current Price")
+        st.subheader(f"${report['current_price']:.2f}")
+    with p2:
+        st.caption("1-Year Return")
+        st.subheader(f"{report['one_year_return_pct']:.1f}%")
+    with p3:
+        st.caption("5-Year Return")
+        st.subheader(f"{report['five_year_return_pct']:.1f}%")
+    with p4:
+        st.caption("Market Cap")
+        st.subheader(report['market_cap'])
+    with p5:
+        st.caption("52-Wk Range")
+        st.subheader(f"{report['fifty_two_week_low']} – {report['fifty_two_week_high']}")
     st.divider()
 
     # Chart
-    st.subheader("📊 Price History")
+    st.subheader("Price History")
     with st.spinner("Loading chart..."):
         fig = build_price_chart(
             subject_ticker=report['ticker'],
@@ -1271,7 +1346,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
 
     if has_targets or has_recs:
         st.divider()
-        st.subheader("🏦 Analyst Recommendations")
+        st.subheader("Analyst Recommendations")
         st.caption("Last 3 months | Source: Yahoo Finance | "
                    "Ratings shown as reported by each firm")
 
@@ -1289,18 +1364,22 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
                 return f"{pct:+.1f}% vs current"
 
             a1, a2, a3, a4 = st.columns(4)
-            a1.metric("Mean Target",
-                      f"${mean_t:.2f}" if mean_t else "N/A",
-                      upside_str(mean_t))
-            a2.metric("High Target",
-                      f"${high_t:.2f}" if high_t else "N/A",
-                      upside_str(high_t))
-            a3.metric("Low Target",
-                      f"${low_t:.2f}" if low_t else "N/A",
-                      upside_str(low_t))
-            a4.metric("Median Target",
-                      f"${med_t:.2f}" if med_t else "N/A",
-                      upside_str(med_t))
+            with a1:
+                st.caption("Mean Target")
+                st.subheader(f"${mean_t:.2f}" if mean_t else "N/A")
+                if upside_str(mean_t): st.caption(upside_str(mean_t))
+            with a2:
+                st.caption("High Target")
+                st.subheader(f"${high_t:.2f}" if high_t else "N/A")
+                if upside_str(high_t): st.caption(upside_str(high_t))
+            with a3:
+                st.caption("Low Target")
+                st.subheader(f"${low_t:.2f}" if low_t else "N/A")
+                if upside_str(low_t): st.caption(upside_str(low_t))
+            with a4:
+                st.caption("Median Target")
+                st.subheader(f"${med_t:.2f}" if med_t else "N/A")
+                if upside_str(med_t): st.caption(upside_str(med_t))
 
             st.caption(
                 "Price targets represent the aggregate of **all** price targets "
@@ -1322,6 +1401,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
                     ["Date", "Firm", "Rating", "Action"]
                 ].copy()
                 display_df["Date"] = display_df["Date"].astype(str)
+
                 st.dataframe(display_df, hide_index=True,
                              use_container_width=True)
         elif has_targets:
@@ -1394,6 +1474,21 @@ st.set_page_config(
 st.title("📈 Equity Research Assistant")
 st.caption("AI-generated research reports — not investment advice")
 
+st.markdown("""
+<style>
+section[data-testid="stSidebar"] button[kind="primary"] {
+    background-color: #000000;
+    border-color: #000000;
+    color: #ffffff;
+}
+section[data-testid="stSidebar"] button[kind="primary"]:hover {
+    background-color: #333333;
+    border-color: #333333;
+    color: #ffffff;
+}
+</style>
+""", unsafe_allow_html=True)
+
 with st.sidebar:
     st.header("Report Parameters")
 
@@ -1438,12 +1533,11 @@ with st.sidebar:
         use_container_width=True
     )
 
-    # Analyst firm buttons — appear after report is generated
-    if (st.session_state.get("report_ready")
-            and st.session_state.get("all_firms")):
+    # Analyst firm buttons — appear whenever firm data is in session state
+    if st.session_state.get("all_firms"):
 
         st.divider()
-        st.subheader("🏦 Analyst Firms")
+        st.subheader("Analyst Firms")
         st.caption("Click to toggle firm recommendations")
 
         sa_col, ca_col = st.columns(2)
@@ -1551,14 +1645,12 @@ if generate_btn and ticker_input:
 
         status.update(label="Report ready!", state="complete")
 
-    render_report(
-        report, subject_fund, comps_data, comp_tickers,
-        chart_period, normalize, selected_indices,
-        analyst_targets, analyst_recs,
-        st.session_state.selected_firms
-    )
+    # Rerun so the sidebar re-renders with all_firms already in session state,
+    # which is required for the analyst firm buttons to appear.
+    st.rerun()
 
 elif "report" in st.session_state and not generate_btn:
+    st.session_state.report_ready = True
     render_report(
         st.session_state.report,
         st.session_state.subject_fund,

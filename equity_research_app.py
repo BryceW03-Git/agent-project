@@ -123,23 +123,62 @@ def get_fundamentals(ticker):
         if market_cap and free_cashflow and market_cap > 0:
             fcf_yield = free_cashflow / market_cap
 
+        def calc_roic(stock):
+            try:
+                bs  = stock.balance_sheet
+                fin = stock.financials
+                if bs is None or fin is None or bs.empty or fin.empty:
+                    return "N/A"
+
+                op_income = (fin.loc["Operating Income"].iloc[0]
+                             if "Operating Income" in fin.index else None)
+
+                tax_provision = (fin.loc["Tax Provision"].iloc[0]
+                                 if "Tax Provision" in fin.index else None)
+
+                if not op_income:
+                    return "N/A"
+
+                # NOPAT = Operating Income - taxes paid (floor tax benefit at zero)
+                # Negative tax provision = government tax benefit = treat as zero tax paid
+                tax_paid = max(0, tax_provision) if tax_provision is not None else op_income * 0.21
+                nopat = op_income - tax_paid
+
+                # Invested Capital = Equity + Total Debt - Cash
+                equity = (bs.loc["Stockholders Equity"].iloc[0]
+                          if "Stockholders Equity" in bs.index else None)
+                debt   = (bs.loc["Long Term Debt"].iloc[0]
+                          if "Long Term Debt" in bs.index else 0)
+                cash   = (bs.loc["Cash And Cash Equivalents"].iloc[0]
+                          if "Cash And Cash Equivalents" in bs.index else 0)
+
+                if equity:
+                    invested_capital = equity + (debt or 0) - (cash or 0)
+                    if invested_capital > 0:
+                        roic = (nopat / invested_capital) * 100
+                        return f"{roic:.1f}%"
+                return "N/A"
+            except Exception:
+                return "N/A"
+
         return {
-            "company_name":       info.get("longName", ticker),
-            "sector":             info.get("sector", "N/A"),
-            "industry":           info.get("industry", "N/A"),
-            "market_cap":         dollar_b(market_cap),
-            "fifty_two_week_high":f"${info.get('fiftyTwoWeekHigh', 0):.2f}",
-            "fifty_two_week_low": f"${info.get('fiftyTwoWeekLow', 0):.2f}",
-            "1_trailing_pe":      multiple(info.get("trailingPE")),
-            "2_forward_pe":       multiple(info.get("forwardPE")),
-            "3_ev_ebitda":        multiple(ev_ebitda),
-            "4_price_to_book":    multiple(info.get("priceToBook")),
-            "5_price_to_fcf":     multiple(price_to_fcf),
-            "6_operating_margin": pct(info.get("operatingMargins")),
-            "7_return_on_equity": pct(info.get("returnOnEquity")),
-            "8_revenue_growth":   pct(info.get("revenueGrowth")),
-            "9_debt_to_equity":   multiple(info.get("debtToEquity"), decimals=2),
-            "10_fcf_yield":       pct(fcf_yield),
+            "company_name":        info.get("longName", ticker),
+            "sector":              info.get("sector", "N/A"),
+            "industry":            info.get("industry", "N/A"),
+            "market_cap":          dollar_b(market_cap),
+            "fifty_two_week_high": f"${info.get('fiftyTwoWeekHigh', 0):.2f}",
+            "fifty_two_week_low":  f"${info.get('fiftyTwoWeekLow', 0):.2f}",
+            "1_trailing_pe":       multiple(info.get("trailingPE")),
+            "2_forward_pe":        multiple(info.get("forwardPE")),
+            "3_ev_ebitda":         multiple(ev_ebitda),
+            "4_price_to_book":     multiple(info.get("priceToBook")),
+            "5_price_to_fcf":      multiple(price_to_fcf),
+            "6_operating_margin":  pct(info.get("operatingMargins")),
+            "7_roic":              calc_roic(stock),
+            "8_return_on_equity":  pct(info.get("returnOnEquity")),
+            "9_revenue_growth":    pct(info.get("revenueGrowth")),
+            "10_debt_to_equity":   multiple(info.get("debtToEquity"), decimals=2),
+            "11_fcf_yield":        pct(fcf_yield),
         }
     except Exception:
         return None
@@ -240,6 +279,74 @@ def get_analyst_data(ticker):
 
     except Exception:
         return {}, None
+
+
+def get_financial_history(ticker, years=4):
+    try:
+        stock = yf.Ticker(ticker)
+        financials = stock.financials
+        if financials is None or financials.empty:
+            return f"No financial history available for {ticker}"
+
+        years = min(int(years), 10)
+
+        result = {}
+        rows_wanted = ["Total Revenue", "Net Income",
+                       "Operating Income", "Gross Profit"]
+        for row in rows_wanted:
+            if row in financials.index:
+                row_data = financials.loc[row].iloc[:years]
+                result[row] = {
+                    str(col.year): f"${val/1e9:.2f}B"
+                    for col, val in row_data.items()
+                    if val is not None and not pd.isna(val)
+                }
+
+        info = stock.info
+        margins = {}
+        if info.get("grossMargins"):
+            margins["Gross Margin"] = f"{info['grossMargins']*100:.1f}%"
+        if info.get("operatingMargins"):
+            margins["Operating Margin"] = f"{info['operatingMargins']*100:.1f}%"
+        if info.get("profitMargins"):
+            margins["Net Margin"] = f"{info['profitMargins']*100:.1f}%"
+
+        result["Current Margins"] = margins
+        result["Years Shown"] = years
+        return result
+    except Exception as e:
+        return f"Error fetching financial history for {ticker}: {str(e)}"
+
+
+def get_recent_news(ticker, max_articles=5):
+    try:
+        stock = yf.Ticker(ticker)
+        news = stock.news
+        if not news:
+            return f"No recent news found for {ticker}"
+
+        articles = []
+        for item in news[:max_articles]:
+            article = {
+                "title":     item.get("title", "No title"),
+                "publisher": item.get("publisher", "Unknown"),
+                "summary":   item.get("summary", "No summary available")[:300],
+                "published": (
+                    datetime.fromtimestamp(
+                        item.get("providerPublishTime", 0)
+                    ).strftime("%Y-%m-%d")
+                    if item.get("providerPublishTime") else "Unknown date"
+                ),
+            }
+            articles.append(article)
+
+        return {
+            "ticker":        ticker,
+            "article_count": len(articles),
+            "articles":      articles,
+        }
+    except Exception as e:
+        return f"Error fetching news for {ticker}: {str(e)}"
 
 
 def get_unique_firms(recs_df):
@@ -571,8 +678,8 @@ def generate_pdf(report, subject_fund, comps_data,
         f"${report['current_price']:.2f}",
         f"{report['one_year_return_pct']:.1f}%",
         f"{report['five_year_return_pct']:.1f}%",
-        report['market_cap'],
-        f"{report['fifty_two_week_low']} – {report['fifty_two_week_high']}"
+        report.get('market_cap', 'N/A'),
+        f"{report.get('fifty_two_week_low', 'N/A')} – {report.get('fifty_two_week_high', 'N/A')}"
     ]
     col_w    = W / len(perf_headers)
     perf_tbl = Table([perf_headers, perf_values],
@@ -587,18 +694,19 @@ def generate_pdf(report, subject_fund, comps_data,
 
     # ── Fundamentals ──────────────────────────────────────────
     val_rows = [
-        ["1. Trailing P/E",   report['trailing_pe']],
-        ["2. Forward P/E",    report['forward_pe']],
-        ["3. EV / EBITDA",    report['ev_ebitda']],
-        ["4. Price / Book",   report['price_to_book']],
-        ["5. Price / FCF",    report['price_to_fcf']],
+        ["1. Trailing P/E",   report.get('trailing_pe', 'N/A')],
+        ["2. Forward P/E",    report.get('forward_pe', 'N/A')],
+        ["3. EV / EBITDA",    report.get('ev_ebitda', 'N/A')],
+        ["4. Price / Book",   report.get('price_to_book', 'N/A')],
+        ["5. Price / FCF",    report.get('price_to_fcf', 'N/A')],
     ]
     qual_rows = [
-        ["6. Operating Margin", report['operating_margin']],
-        ["7. Return on Equity", report['return_on_equity']],
-        ["8. Revenue Growth",   report['revenue_growth_yoy']],
-        ["9. Debt / Equity",    report['debt_to_equity']],
-        ["10. FCF Yield",       report['fcf_yield']],
+        ["6. Operating Margin", report.get('operating_margin', 'N/A')],
+        ["7. ROIC",             report.get('roic', 'N/A')],
+        ["8. Return on Equity", report.get('return_on_equity', 'N/A')],
+        ["9. Revenue Growth",   report.get('revenue_growth_yoy', 'N/A')],
+        ["10. Debt / Equity",   report.get('debt_to_equity', 'N/A')],
+        ["11. FCF Yield",       report.get('fcf_yield', 'N/A')],
     ]
 
     def make_fund_table(rows, col_widths):
@@ -622,7 +730,19 @@ def generate_pdf(report, subject_fund, comps_data,
 
     story.append(KeepTogether([
         Paragraph("TOP 10 VALUE INVESTOR FUNDAMENTALS", s_section),
-        fund_layout, Spacer(1, 8),
+        fund_layout,
+        Spacer(1, 4),
+        Paragraph(
+            "Valuation multiples based on trailing 12-month (TTM) financials "
+            "unless noted. Forward P/E based on analyst consensus estimates. "
+            "Balance sheet metrics reflect most recent quarter. Revenue growth "
+            "is year-over-year. ROIC = NOPAT / (Equity + Debt - Cash), "
+            "where NOPAT = Operating Income minus taxes paid "
+            "(tax benefits treated as zero). "
+            "Source: Yahoo Finance.",
+            s_small
+        ),
+        Spacer(1, 4),
         hr(),
     ]))
 
@@ -656,10 +776,11 @@ def generate_pdf(report, subject_fund, comps_data,
             ("Price/Book",    "4_price_to_book"),
             ("Price/FCF",     "5_price_to_fcf"),
             ("Oper. Margin",  "6_operating_margin"),
-            ("ROE",           "7_return_on_equity"),
-            ("Rev. Growth",   "8_revenue_growth"),
-            ("Debt/Equity",   "9_debt_to_equity"),
-            ("FCF Yield",     "10_fcf_yield"),
+            ("ROIC",          "7_roic"),
+            ("ROE",           "8_return_on_equity"),
+            ("Rev. Growth",   "9_revenue_growth"),
+            ("Debt/Equity",   "10_debt_to_equity"),
+            ("FCF Yield",     "11_fcf_yield"),
         ]
         comp_header = ["Metric"] + [
             f"*{t}" if t == report['ticker'] else t
@@ -867,16 +988,77 @@ data_tools = [
     {
         "name": "get_fundamentals",
         "description": (
-            "Fetch top 10 value investor fundamentals: trailing P/E, "
+            "Fetch key value investor fundamentals: trailing P/E, "
             "forward P/E, EV/EBITDA, price/book, price/FCF, operating margin, "
-            "ROE, revenue growth, debt/equity, FCF yield."
+            "ROIC, ROE, revenue growth, debt/equity, FCF yield."
         ),
         "input_schema": {
             "type": "object",
             "properties": {"ticker": {"type": "string"}},
             "required": ["ticker"]
         }
-    }
+    },
+    {
+        "name": "get_analyst_data",
+        "description": (
+            "Fetch analyst price targets (mean, high, low, median) and recent "
+            "upgrade/downgrade history (last 3 months) for a stock ticker."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"]
+        }
+    },
+    {
+        "name": "get_financial_history",
+        "description": (
+            "Fetch annual revenue, net income, operating income, and gross profit "
+            "history plus current margins. Supports up to 10 years of history — "
+            "default is 4 years unless user specifies more. Use when asked about "
+            "revenue growth trends, earnings history, or financial performance "
+            "over time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Stock ticker symbol"
+                },
+                "years": {
+                    "type": "integer",
+                    "description": (
+                        "Number of years of history to return. "
+                        "Default 4, maximum 10. Pick based on what the user asks for."
+                    )
+                }
+            },
+            "required": ["ticker"]
+        }
+    },
+    {
+        "name": "get_recent_news",
+        "description": (
+            "Fetch recent news headlines and summaries for a stock ticker. "
+            "Use when asked about recent events, earnings, announcements, "
+            "or news about a company."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Stock ticker symbol"
+                },
+                "max_articles": {
+                    "type": "integer",
+                    "description": "Number of articles to return. Default 5, maximum 10."
+                }
+            },
+            "required": ["ticker"]
+        }
+    },
 ]
 
 
@@ -887,6 +1069,32 @@ def execute_tool(name, inputs):
         return get_historical_return(**inputs)
     elif name == "get_fundamentals":
         return get_fundamentals(**inputs)
+    elif name == "get_analyst_data":
+        ticker = inputs["ticker"]
+        targets, recs_df = get_analyst_data(ticker)
+        data = {"ticker": ticker}
+        if targets:
+            data["price_targets"] = {
+                k: (f"${v:.2f}" if v else "N/A")
+                for k, v in targets.items()
+            }
+        if recs_df is not None and not recs_df.empty:
+            data["recent_ratings"] = [
+                {
+                    "date":   str(row["Date"]),
+                    "firm":   row["Firm"],
+                    "rating": row["Rating"],
+                    "action": row["Action"],
+                }
+                for _, row in recs_df.head(10).iterrows()
+            ]
+        if len(data) == 1:
+            return f"No analyst data available for {ticker}"
+        return data
+    elif name == "get_financial_history":
+        return get_financial_history(**inputs)
+    elif name == "get_recent_news":
+        return get_recent_news(**inputs)
     return f"Error: unknown tool '{name}'"
 
 
@@ -961,6 +1169,7 @@ research_report_tool = {
             "price_to_book":       {"type": "string"},
             "price_to_fcf":        {"type": "string"},
             "operating_margin":    {"type": "string"},
+            "roic":                {"type": "string", "description": "Return on Invested Capital as a percentage"},
             "return_on_equity":    {"type": "string"},
             "revenue_growth_yoy":  {"type": "string"},
             "debt_to_equity":      {"type": "string"},
@@ -983,7 +1192,7 @@ research_report_tool = {
             "one_year_return_pct", "five_year_return_pct", "market_cap",
             "trailing_pe", "forward_pe", "ev_ebitda",
             "price_to_book", "price_to_fcf", "operating_margin",
-            "return_on_equity", "revenue_growth_yoy", "debt_to_equity",
+            "roic", "return_on_equity", "revenue_growth_yoy", "debt_to_equity",
             "fcf_yield", "ai_rating", "ai_rating_rationale",
             "investment_thesis", "key_risks", "one_line_summary"
         ]
@@ -1056,7 +1265,7 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
 {thin}
   VALUATION{row('1. Trailing P/E:', r['trailing_pe'])}{row('2. Forward P/E:', r['forward_pe'])}{row('3. EV / EBITDA:', r['ev_ebitda'])}{row('4. Price / Book:', r['price_to_book'])}{row('5. Price / FCF:', r['price_to_fcf'])}
 
-  QUALITY & GROWTH{row('6. Operating Margin:', r['operating_margin'])}{row('7. Return on Equity:', r['return_on_equity'])}{row('8. Revenue Growth:', r['revenue_growth_yoy'])}{row('9. Debt / Equity:', r['debt_to_equity'])}{row('10. FCF Yield:', r['fcf_yield'])}"""
+  QUALITY & GROWTH{row('6. Operating Margin:', r['operating_margin'])}{row('7. ROIC:', r['roic'])}{row('8. Return on Equity:', r['return_on_equity'])}{row('9. Revenue Growth:', r['revenue_growth_yoy'])}{row('10. Debt / Equity:', r['debt_to_equity'])}{row('11. FCF Yield:', r['fcf_yield'])}"""
 
     if subject_fundamentals and comps_data:
         LABEL_W = 20
@@ -1075,10 +1284,11 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
             ("",                 None),
             ("QUALITY & GROWTH", None),
             ("6. Oper. Margin",  "6_operating_margin"),
-            ("7. ROE",           "7_return_on_equity"),
-            ("8. Rev. Growth",   "8_revenue_growth"),
-            ("9. Debt / Equity", "9_debt_to_equity"),
-            ("10. FCF Yield",    "10_fcf_yield"),
+            ("7. ROIC",          "7_roic"),
+            ("8. ROE",           "8_return_on_equity"),
+            ("9. Rev. Growth",   "9_revenue_growth"),
+            ("10. Debt / Equity","10_debt_to_equity"),
+            ("11. FCF Yield",    "11_fcf_yield"),
         ]
         header = f"  {'METRIC':<{LABEL_W}}"
         names  = f"  {'':<{LABEL_W}}"
@@ -1258,41 +1468,79 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     st.subheader("Top 10 Value Investor Fundamentals")
     fund_c1, fund_c2 = st.columns(2)
 
+    _tbl_css = """
+    <style>
+    .fund-table { width:100%; border-collapse:collapse; font-size:0.875rem; }
+    .fund-table th {
+        background:#f0f0f0; text-align:left; padding:6px 10px;
+        font-weight:600; border-bottom:2px solid #ddd;
+    }
+    .fund-table td { padding:6px 10px; border-bottom:1px solid #eee; }
+    .fund-table tr:last-child td { border-bottom:none; }
+    .fund-table td.metric { cursor:help; }
+    </style>
+    """
+    st.markdown(_tbl_css, unsafe_allow_html=True)
+
+    _val_rows = [
+        ("1. Trailing P/E",
+         "Price-to-Earnings (Trailing): Current stock price divided by earnings per share over the last 12 months (TTM). Lower = cheaper relative to current earnings.",
+         report.get('trailing_pe', 'N/A')),
+        ("2. Forward P/E",
+         "Price-to-Earnings (Forward): Current stock price divided by analyst consensus EPS estimate for the next 12 months. Reflects market expectations for future earnings growth.",
+         report.get('forward_pe', 'N/A')),
+        ("3. EV/EBITDA",
+         "Enterprise Value to EBITDA: Total company value (market cap + debt - cash) divided by earnings before interest, taxes, depreciation and amortization over the last 12 months. Capital-structure-neutral valuation multiple.",
+         report.get('ev_ebitda', 'N/A')),
+        ("4. Price/Book",
+         "Price-to-Book: Current stock price divided by book value per share (assets minus liabilities) as of the most recent quarter. Values below 1.0 suggest the stock trades below net asset value.",
+         report.get('price_to_book', 'N/A')),
+        ("5. Price/FCF",
+         "Price-to-Free Cash Flow: Market capitalization divided by free cash flow over the last 12 months. Measures how many years of free cash flow you are paying for the business.",
+         report.get('price_to_fcf', 'N/A')),
+    ]
+    _qual_rows = [
+        ("6. Operating Margin",
+         "Operating Margin: Operating income divided by revenue over the last 12 months. Measures what percentage of revenue survives after paying operating costs. Higher = stronger competitive position.",
+         report.get('operating_margin', 'N/A')),
+        ("7. ROIC",
+         "ROIC = NOPAT / Invested Capital, where NOPAT = Operating Income minus taxes paid (tax benefits treated as zero). Invested Capital = Equity + Total Debt - Cash.",
+         report.get('roic', 'N/A')),
+        ("8. Return on Equity",
+         "Return on Equity (ROE): Net income divided by shareholders equity over the last 12 months. Measures how efficiently management generates profit from shareholders' money.",
+         report.get('return_on_equity', 'N/A')),
+        ("9. Revenue Growth",
+         "Revenue Growth (YoY): Year-over-year revenue growth comparing the most recent quarter to the same quarter in the prior year.",
+         report.get('revenue_growth_yoy', 'N/A')),
+        ("10. Debt/Equity",
+         "Debt-to-Equity: Total debt divided by shareholders equity as of the most recent quarter. Measures financial leverage. Higher values mean more debt relative to equity capital.",
+         report.get('debt_to_equity', 'N/A')),
+        ("11. FCF Yield",
+         "Free Cash Flow Yield: Free cash flow over the last 12 months divided by current market capitalization. The cash return you receive on the market price — the inverse of Price/FCF.",
+         report.get('fcf_yield', 'N/A')),
+    ]
+
+    def _fund_html(header_label, rows, ticker):
+        rows_html = "".join(
+            f'<tr><td class="metric" title="{tip}">{label}</td><td>{val}</td></tr>'
+            for label, tip, val in rows
+        )
+        return (
+            f'<table class="fund-table">'
+            f'<thead><tr><th>Metric</th><th>{ticker}</th></tr></thead>'
+            f'<tbody>{rows_html}</tbody>'
+            f'</table>'
+        )
+
     with fund_c1:
         st.markdown("**Valuation**")
-        st.dataframe(
-            pd.DataFrame({
-                "Metric": [
-                    "1. Trailing P/E", "2. Forward P/E",
-                    "3. EV / EBITDA",  "4. Price / Book",
-                    "5. Price / FCF"
-                ],
-                report['ticker']: [
-                    report['trailing_pe'], report['forward_pe'],
-                    report['ev_ebitda'],   report['price_to_book'],
-                    report['price_to_fcf']
-                ]
-            }),
-            hide_index=True, use_container_width=True
-        )
+        st.markdown(_fund_html("Valuation", _val_rows, report['ticker']),
+                    unsafe_allow_html=True)
 
     with fund_c2:
         st.markdown("**Quality & Growth**")
-        st.dataframe(
-            pd.DataFrame({
-                "Metric": [
-                    "6. Operating Margin", "7. Return on Equity",
-                    "8. Revenue Growth",   "9. Debt / Equity",
-                    "10. FCF Yield"
-                ],
-                report['ticker']: [
-                    report['operating_margin'], report['return_on_equity'],
-                    report['revenue_growth_yoy'], report['debt_to_equity'],
-                    report['fcf_yield']
-                ]
-            }),
-            hide_index=True, use_container_width=True
-        )
+        st.markdown(_fund_html("Quality & Growth", _qual_rows, report['ticker']),
+                    unsafe_allow_html=True)
 
     # Comps
     if comps_data:
@@ -1310,10 +1558,11 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
         ]
         metrics_qual = [
             ("6. Oper. Margin",  "6_operating_margin"),
-            ("7. ROE",           "7_return_on_equity"),
-            ("8. Rev. Growth",   "8_revenue_growth"),
-            ("9. Debt / Equity", "9_debt_to_equity"),
-            ("10. FCF Yield",    "10_fcf_yield"),
+            ("7. ROIC",          "7_roic"),
+            ("8. ROE",           "8_return_on_equity"),
+            ("9. Rev. Growth",   "9_revenue_growth"),
+            ("10. Debt / Equity","10_debt_to_equity"),
+            ("11. FCF Yield",    "11_fcf_yield"),
         ]
 
         def build_comp_df(metrics):
@@ -1331,11 +1580,11 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
         with comp_c1:
             st.markdown("**Valuation**")
             st.dataframe(build_comp_df(metrics_val),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width='stretch')
         with comp_c2:
             st.markdown("**Quality & Growth**")
             st.dataframe(build_comp_df(metrics_qual),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width='stretch')
         st.caption(f"★ = subject company ({report['ticker']})")
 
     # ── Analyst Recommendations ───────────────────────────────
@@ -1403,7 +1652,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
                 display_df["Date"] = display_df["Date"].astype(str)
 
                 st.dataframe(display_df, hide_index=True,
-                             use_container_width=True)
+                             width='stretch')
         elif has_targets:
             st.info("No individual firm ratings available for this ticker.")
 
@@ -1438,7 +1687,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
             data=report_text,
             file_name=f"{filename_stem}.txt",
             mime="text/plain",
-            use_container_width=True
+            width='stretch'
         )
 
     with dl_col2:
@@ -1454,7 +1703,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
             data=pdf_bytes,
             file_name=f"{filename_stem}.pdf",
             mime="application/pdf",
-            use_container_width=True
+            width='stretch'
         )
 
     st.caption(
@@ -1486,10 +1735,147 @@ section[data-testid="stSidebar"] button[kind="primary"]:hover {
     border-color: #333333;
     color: #ffffff;
 }
+section[data-testid="stSidebar"] {
+    min-width: 340px !important;
+}
+section[data-testid="stSidebar"] > div:first-child {
+    min-width: 340px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    background-color: #000000;
+    color: #ffffff;
+    border-radius: 6px;
+    font-size: 1.25rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+    background-color: #333333;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary p,
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary span {
+    color: #ffffff !important;
+    font-size: 1.25rem !important;
+    font-weight: 700 !important;
+    white-space: nowrap !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary svg {
+    fill: #ffffff !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
+_ANALYST_WELCOME = (
+    "Hi! I'm your AI analyst. Ask me about any stock, or if you've generated "
+    "a report I already have that context loaded."
+)
+
+if "analyst_chat" not in st.session_state:
+    st.session_state.analyst_chat = [
+        {"role": "assistant", "content": _ANALYST_WELCOME}
+    ]
+
 with st.sidebar:
+    with st.expander("💬 ASK THE AI ASSISTANT", expanded=False):
+        if st.button("Clear", key="clear_analyst_chat"):
+            st.session_state.analyst_chat = [
+                {"role": "assistant", "content": _ANALYST_WELCOME}
+            ]
+            st.rerun()
+
+        for _msg in st.session_state.analyst_chat:
+            with st.chat_message(_msg["role"]):
+                st.write(_msg["content"])
+
+        _user_input = st.chat_input(
+            "Ask about any stock...", key="analyst_chat_input"
+        )
+
+        if _user_input:
+            st.session_state.analyst_chat.append(
+                {"role": "user", "content": _user_input}
+            )
+
+            _base_system = (
+                "You are a senior equity research analyst with access to live "
+                "market data tools. Answer questions concisely and precisely. "
+                "Always cite specific numbers. If a report has been generated, "
+                "use that context first before calling tools. "
+                "You can fetch data for any ticker symbol using your tools, not "
+                "just the current report ticker. If asked to compare stocks, "
+                "fetch data for each ticker independently. "
+                "Be concise and structured. Use bullet points for financial data. "
+                "Lead with the most important facts first. Keep total response "
+                "under 400 words unless the user explicitly asks for more detail. "
+                "Never leave a response incomplete — if you are running long, "
+                "summarize rather than cut off. "
+                "When using web search, extract only the key facts needed to "
+                "answer the question. Do not reproduce large amounts of web "
+                "content. Summarize findings in 2-3 sentences maximum then "
+                "provide your analysis."
+            )
+            if st.session_state.get("report"):
+                _r = st.session_state.report
+                _ctx = (
+                    f"Report context: {_r['ticker']} ({_r['company_name']}), "
+                    f"current price ${_r['current_price']:.2f}, "
+                    f"AI rating: {_r['ai_rating']}, "
+                    f"summary: {_r['one_line_summary']}.\n\n"
+                )
+                _system = _ctx + _base_system
+            else:
+                _system = _base_system
+
+            # Build API messages, skipping any leading assistant messages
+            _api_msgs = []
+            for _m in st.session_state.analyst_chat:
+                if not _api_msgs and _m["role"] == "assistant":
+                    continue
+                _api_msgs.append(
+                    {"role": _m["role"], "content": _m["content"]}
+                )
+
+            with st.spinner("Thinking..."):
+                while True:
+                    _resp = client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=2048,
+                        system=_system,
+                        tools=data_tools,
+                        messages=_api_msgs,
+                    )
+                    _api_msgs.append(
+                        {"role": "assistant", "content": _resp.content}
+                    )
+                    if _resp.stop_reason != "tool_use":
+                        _reply = next(
+                            (b.text for b in _resp.content if b.type == "text"),
+                            "",
+                        )
+                        break
+                    _tool_results = []
+                    for _blk in _resp.content:
+                        if _blk.type == "tool_use":
+                            _res = execute_tool(_blk.name, _blk.input)
+                            _tool_results.append({
+                                "type":        "tool_result",
+                                "tool_use_id": _blk.id,
+                                "content": (
+                                    json.dumps(_res)
+                                    if isinstance(_res, dict)
+                                    else str(_res)
+                                ),
+                            })
+                    _api_msgs.append(
+                        {"role": "user", "content": _tool_results}
+                    )
+
+            st.session_state.analyst_chat.append(
+                {"role": "assistant", "content": _reply}
+            )
+            st.rerun()
+
+    st.divider()
     st.header("Report Parameters")
 
     ticker_input = st.text_input(
@@ -1532,6 +1918,15 @@ with st.sidebar:
         disabled=not ticker_input,
         use_container_width=True
     )
+
+    if st.session_state.get("report_ready"):
+        if st.button("🗑️ Clear Report", use_container_width=True, type="secondary"):
+            for _key in ["report", "subject_fund", "comps_data", "comp_tickers",
+                         "analyst_targets", "analyst_recs", "all_firms",
+                         "selected_firms", "report_ready", "analyst_chat"]:
+                st.session_state.pop(_key, None)
+            st.rerun()
+        st.caption("Clears current report and chat history")
 
     # Analyst firm buttons — appear whenever firm data is in session state
     if st.session_state.get("all_firms"):

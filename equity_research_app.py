@@ -23,7 +23,13 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 
 load_dotenv()
-client = anthropic.Anthropic()
+api_key = os.environ.get("ANTHROPIC_API_KEY")
+if not api_key:
+    try:
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        pass
+client = anthropic.Anthropic(api_key=api_key)
 
 # ─── CONSTANTS ───────────────────────────────────────────────
 
@@ -201,14 +207,25 @@ def validate_ticker(ticker):
 
 
 def get_comps_data(comp_tickers):
+    import time
     valid   = {}
     invalid = []
     for ticker in comp_tickers:
         ticker = ticker.upper().strip()
-        result = get_fundamentals(ticker)
-        if result is not None:
-            valid[ticker] = result
-        else:
+        success = False
+        for attempt in range(2):
+            try:
+                result = get_fundamentals(ticker)
+                if result is not None:
+                    valid[ticker] = result
+                    success = True
+                    break
+                elif attempt == 0:
+                    time.sleep(1)
+            except Exception:
+                if attempt == 0:
+                    time.sleep(1)
+        if not success:
             invalid.append(ticker)
     return valid, invalid
 

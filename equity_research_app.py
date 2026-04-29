@@ -573,12 +573,22 @@ def generate_pdf(report, subject_fund, comps_data,
     s_rating    = style("rating",    fontSize=11,
                         fontName="Helvetica-Bold",
                         textColor=colors.white, alignment=TA_CENTER)
-    s_oneliner  = style("oneliner",  fontSize=9,
-                        fontName="Helvetica-Bold",
-                        textColor=colors.HexColor("#222222"), spaceAfter=2)
-    s_rationale = style("rationale", fontSize=8,
-                        textColor=colors.HexColor("#444444"),
-                        spaceAfter=8, alignment=TA_JUSTIFY)
+    s_oneliner    = style("oneliner",    fontSize=9,
+                          fontName="Helvetica-Bold",
+                          textColor=colors.HexColor("#222222"), spaceAfter=2)
+    s_rationale   = style("rationale",   fontSize=8,
+                          textColor=colors.HexColor("#444444"),
+                          spaceAfter=8, alignment=TA_JUSTIFY)
+    s_bold_body   = style("bold_body",   fontSize=9, leading=14,
+                          fontName="Helvetica-Bold", spaceAfter=4)
+    s_italic      = style("italic",      fontSize=7.5,
+                          fontName="Helvetica-Oblique",
+                          textColor=colors.HexColor("#666666"),
+                          leading=11, spaceAfter=2, alignment=TA_JUSTIFY)
+    s_scenario_hdr = style("scenario_hdr", fontSize=8,
+                           fontName="Helvetica-Bold",
+                           textColor=colors.HexColor("#111111"),
+                           alignment=TA_CENTER, spaceAfter=0)
 
     def header_table_style(n_rows):
         return TableStyle([
@@ -697,6 +707,64 @@ def generate_pdf(report, subject_fund, comps_data,
         hr(space_after=6),
     ]))
 
+    # ── Price Target Scenarios ────────────────────────────────
+    _cur_p  = report.get('current_price', 0) or 1
+    _bear_p = report.get('bear_case_price', 0)
+    _base_p = report.get('base_case_price', 0)
+    _bull_p = report.get('bull_case_price', 0)
+
+    def _pct_vs(price):
+        pct = (price - _cur_p) / _cur_p * 100
+        return f"{pct:+.1f}% vs current"
+
+    pt_col_w = W / 3
+    pt_tbl = Table(
+        [
+            [
+                Paragraph("Bear Case", s_scenario_hdr),
+                Paragraph("Base Case", s_scenario_hdr),
+                Paragraph("Bull Case", s_scenario_hdr),
+            ],
+            [
+                Paragraph(f"${_bear_p:.2f}", s_body),
+                Paragraph(f"${_base_p:.2f}", s_body),
+                Paragraph(f"${_bull_p:.2f}", s_body),
+            ],
+            [
+                Paragraph(_pct_vs(_bear_p), s_small),
+                Paragraph(_pct_vs(_base_p), s_small),
+                Paragraph(_pct_vs(_bull_p), s_small),
+            ],
+            [
+                Paragraph(report.get('bear_case_rationale', 'N/A'), s_italic),
+                Paragraph(report.get('base_case_rationale', 'N/A'), s_italic),
+                Paragraph(report.get('bull_case_rationale', 'N/A'), s_italic),
+            ],
+        ],
+        colWidths=[pt_col_w, pt_col_w, pt_col_w]
+    )
+    pt_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (0, -1), colors.HexColor("#FFDEDE")),
+        ("BACKGROUND",    (1, 0), (1, -1), colors.HexColor("#F5F5F5")),
+        ("BACKGROUND",    (2, 0), (2, -1), colors.HexColor("#D4EDDA")),
+        ("FONTNAME",      (0, 0), (-1,  0), "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1,  0), 9),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("GRID",          (0, 0), (-1, -1), 0.3, colors.HexColor("#dddddd")),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+    ]))
+
+    story.append(KeepTogether([
+        Paragraph("PRICE TARGET SCENARIOS", s_section),
+        pt_tbl,
+        Spacer(1, 6),
+        hr(),
+    ]))
+
     # ── Performance ───────────────────────────────────────────
     perf_headers = ["Current Price", "1-Year Return", "5-Year Return",
                     "Market Cap", "52-Week Range"]
@@ -714,63 +782,10 @@ def generate_pdf(report, subject_fund, comps_data,
 
     story.append(KeepTogether([
         Paragraph("PRICE &amp; PERFORMANCE", s_section),
-        perf_tbl, Spacer(1, 8),
+        perf_tbl, Spacer(1, 6),
         hr(),
     ]))
 
-    # ── Fundamentals ──────────────────────────────────────────
-    val_rows = [
-        ["1. Trailing P/E",   report.get('trailing_pe', 'N/A')],
-        ["2. Forward P/E",    report.get('forward_pe', 'N/A')],
-        ["3. EV / EBITDA",    report.get('ev_ebitda', 'N/A')],
-        ["4. Price / Book",   report.get('price_to_book', 'N/A')],
-        ["5. Price / FCF",    report.get('price_to_fcf', 'N/A')],
-    ]
-    qual_rows = [
-        ["6. Operating Margin", report.get('operating_margin', 'N/A')],
-        ["7. ROIC",             report.get('roic', 'N/A')],
-        ["8. Return on Equity", report.get('return_on_equity', 'N/A')],
-        ["9. Revenue Growth",   report.get('revenue_growth_yoy', 'N/A')],
-        ["10. Debt / Equity",   report.get('debt_to_equity', 'N/A')],
-        ["11. FCF Yield",       report.get('fcf_yield', 'N/A')],
-    ]
-
-    def make_fund_table(rows, col_widths):
-        data = [["Metric", report['ticker']]] + rows
-        tbl  = Table(data, colWidths=col_widths)
-        tbl.setStyle(header_table_style(len(data)))
-        return tbl
-
-    half     = W / 2
-    gap      = 6  # points between the two side-by-side tables
-    val_tbl  = make_fund_table(val_rows,  [(half - gap) * 0.65, (half - gap) * 0.35])
-    qual_tbl = make_fund_table(qual_rows, [half * 0.65, half * 0.35])
-    fund_layout = Table([[val_tbl, qual_tbl]],
-                        colWidths=[half, half])
-    fund_layout.setStyle(TableStyle([
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING",  (0, 0), (0, -1),  gap),
-    ]))
-
-    story.append(KeepTogether([
-        Paragraph("TOP 10 VALUE INVESTOR FUNDAMENTALS", s_section),
-        fund_layout,
-        Spacer(1, 4),
-        Paragraph(
-            "Valuation multiples based on trailing 12-month (TTM) financials "
-            "unless noted. Forward P/E based on analyst consensus estimates. "
-            "Balance sheet metrics reflect most recent quarter. Revenue growth "
-            "is year-over-year. ROIC = NOPAT / (Equity + Debt - Cash), "
-            "where NOPAT = Operating Income minus taxes paid "
-            "(tax benefits treated as zero). "
-            "Source: Yahoo Finance.",
-            s_small
-        ),
-        Spacer(1, 4),
-        hr(),
-    ]))
 
     # ── Chart ─────────────────────────────────────────────────
     period_code = PERIOD_MAP[chart_period]
@@ -786,7 +801,7 @@ def generate_pdf(report, subject_fund, comps_data,
         chart_elements.append(Paragraph(
             "Dashed lines = market indices (shown only if selected in app).",
             s_small))
-    chart_elements += [Spacer(1, 8),
+    chart_elements += [Spacer(1, 6),
                        hr()]
     story.append(KeepTogether(chart_elements))
 
@@ -829,11 +844,11 @@ def generate_pdf(report, subject_fund, comps_data,
             ("BACKGROUND",    (0, 0), (-1, 0), colors.HexColor("#111111")),
             ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
             ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE",      (0, 0), (-1, 0), 7.5),
+            ("FONTSIZE",      (0, 0), (-1, 0), 8),
             ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
             ("ALIGN",         (0, 1), (0, -1),  "LEFT"),
             ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
-            ("FONTSIZE",      (0, 1), (-1, -1), 7.5),
+            ("FONTSIZE",      (0, 1), (-1, -1), 8),
             ("GRID",          (0, 0), (-1, -1), 0.3, colors.HexColor("#dddddd")),
             ("TOPPADDING",    (0, 0), (-1, -1), 3),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
@@ -850,10 +865,10 @@ def generate_pdf(report, subject_fund, comps_data,
         comp_tbl.setStyle(TableStyle(style_cmds))
 
         story.append(KeepTogether([
-            Paragraph("COMPARABLE COMPANIES ANALYSIS", s_section),
+            Paragraph("TOP 10 VALUE INVESTOR FUNDAMENTALS &amp; COMPARABLE ANALYSIS", s_section),
             comp_tbl,
             Paragraph(f"* = subject company ({report['ticker']})", s_small),
-            Spacer(1, 8),
+            Spacer(1, 6),
             hr(),
         ]))
 
@@ -888,11 +903,11 @@ def generate_pdf(report, subject_fund, comps_data,
                 fmt_target(mean_t), fmt_updown(mean_t),
                 fmt_target(high_t), fmt_target(low_t), fmt_target(med_t),
             ]
-            pt_col_w = W / len(pt_headers)
-            pt_tbl   = Table([pt_headers, pt_values],
-                             colWidths=[pt_col_w] * len(pt_headers))
-            pt_tbl.setStyle(perf_table_style())
-            analyst_elements.append(pt_tbl)
+            apt_col_w    = W / len(pt_headers)
+            analyst_pt_tbl = Table([pt_headers, pt_values],
+                                   colWidths=[apt_col_w] * len(pt_headers))
+            analyst_pt_tbl.setStyle(header_table_style(2))
+            analyst_elements.append(analyst_pt_tbl)
             analyst_elements.append(Paragraph(
                 "Price targets represent the aggregate of all price targets "
                 "submitted by analysts to Yahoo Finance.",
@@ -950,7 +965,7 @@ def generate_pdf(report, subject_fund, comps_data,
                 ))
 
         analyst_elements += [
-            Spacer(1, 8),
+            Spacer(1, 6),
             hr(),
         ]
         story.append(KeepTogether(analyst_elements))
@@ -958,19 +973,45 @@ def generate_pdf(report, subject_fund, comps_data,
     # ── Thesis ────────────────────────────────────────────────
     story.append(KeepTogether([
         Paragraph("INVESTMENT THESIS", s_section),
-        Paragraph(report['investment_thesis'], s_body),
-        Spacer(1, 8),
+        Paragraph(report.get('investment_thesis', 'N/A'), s_body),
+        Spacer(1, 6),
         hr(),
     ]))
 
-    # ── Risks ─────────────────────────────────────────────────
-    risks_elements = [Paragraph("KEY RISKS", s_section)]
-    for i, risk in enumerate(report['key_risks'], 1):
-        risks_elements.append(Paragraph(f"<b>{i}.</b> {risk}", s_body))
-    risks_elements += [
-        Spacer(1, 10),
+    # ── Moat Analysis ─────────────────────────────────────────
+    story.append(KeepTogether([
+        Paragraph("MOAT ANALYSIS", s_section),
+        Paragraph(f"<b>Moat Rating: {report.get('moat_rating', 'N/A')}</b>", s_body),
+        Paragraph(f"<b>Moat Description:</b> {report.get('moat_exists', 'N/A')}", s_body),
+        Paragraph(f"<b>Sustainability:</b> {report.get('moat_sustainability', 'N/A')}", s_body),
+        Paragraph(f"<b>Competitive threats:</b> {report.get('moat_risks', 'N/A')}", s_body),
+        Spacer(1, 6),
         hr(),
-    ]
+    ]))
+
+    # ── Upside Catalysts & Key Risks ──────────────────────────
+    def _shaded_row(text, bg_hex, border_hex):
+        tbl = Table([[Paragraph(text, s_body)]], colWidths=[W])
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (0, 0), colors.HexColor(bg_hex)),
+            ("BOX",           (0, 0), (-1, -1), 0.5, colors.HexColor(border_hex)),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+        ]))
+        tbl.spaceAfter = 3
+        return tbl
+
+    risks_elements = [Paragraph("UPSIDE CATALYSTS &amp; KEY RISKS", s_section)]
+    risks_elements.append(Paragraph("Upside Catalysts:", s_bold_body))
+    for i, cat in enumerate(report.get('upside_catalysts', []), 1):
+        risks_elements.append(_shaded_row(f"{i}. {cat}", "#D4EDDA", "#B2DFDB"))
+    risks_elements.append(Spacer(1, 6))
+    risks_elements.append(Paragraph("Key Risks:", s_bold_body))
+    for i, risk in enumerate(report.get('key_risks', []), 1):
+        risks_elements.append(_shaded_row(f"{i}. {risk}", "#FFDEDE", "#FFCDD2"))
+    risks_elements += [Spacer(1, 6), hr()]
     story.append(KeepTogether(risks_elements))
 
     # ── Disclaimer ────────────────────────────────────────────
@@ -1210,7 +1251,24 @@ research_report_tool = {
                 "type":  "array",
                 "items": {"type": "string"}
             },
-            "one_line_summary": {"type": "string"}
+            "upside_catalysts": {
+                "type":  "array",
+                "items": {"type": "string"}
+            },
+            "one_line_summary": {"type": "string"},
+            "moat_rating": {
+                "type": "string",
+                "enum": ["Wide Moat", "Narrow Moat", "No Moat"]
+            },
+            "moat_exists":        {"type": "string"},
+            "moat_sustainability": {"type": "string"},
+            "moat_risks":          {"type": "string"},
+            "bear_case_price":     {"type": "number"},
+            "bear_case_rationale": {"type": "string"},
+            "base_case_price":     {"type": "number"},
+            "base_case_rationale": {"type": "string"},
+            "bull_case_price":     {"type": "number"},
+            "bull_case_rationale": {"type": "string"}
         },
         "required": [
             "ticker", "company_name", "sector", "industry",
@@ -1220,7 +1278,11 @@ research_report_tool = {
             "price_to_book", "price_to_fcf", "operating_margin",
             "roic", "return_on_equity", "revenue_growth_yoy", "debt_to_equity",
             "fcf_yield", "ai_rating", "ai_rating_rationale",
-            "investment_thesis", "key_risks", "one_line_summary"
+            "investment_thesis", "key_risks", "upside_catalysts", "one_line_summary",
+            "moat_rating", "moat_exists", "moat_sustainability", "moat_risks",
+            "bear_case_price", "bear_case_rationale",
+            "base_case_price", "base_case_rationale",
+            "bull_case_price", "bull_case_rationale"
         ]
     }
 }
@@ -1235,7 +1297,20 @@ def generate_research_report(ticker, conversation_history, data_summary, status)
     - AI rating must cite specific metrics.
     - Thesis: 2-3 sentences, specific, data-grounded.
     - Exactly 3 risks, one crisp sentence each.
-    - One-line summary under 20 words."""
+    - One-line summary under 20 words.
+    - Moat rating must be Wide Moat, Narrow Moat, or No Moat. Base it on evidence from the fundamentals — high ROIC (>15%), high operating margins (>20%), and consistent revenue growth are signals of a moat. Cite the specific metric that supports the rating.
+    - moat_exists: identify which of the five moat types applies (cost advantage, network effects, switching costs, intangible assets, efficient scale) or state none exist.
+    - moat_sustainability: assess durability over 5-10 years. Consider industry disruption risk, competitive intensity, and regulatory environment.
+    - moat_risks: name the specific competitors or structural forces that threaten the moat today.
+    - Bear/Base/Bull price targets must be grounded in the actual current price and fundamentals already gathered. Use the forward P/E as the primary valuation anchor.
+    - Bear case: apply a multiple compression or earnings reduction scenario consistent with the key risks identified. Must be below current price.
+    - Base case: apply current forward P/E to consensus earnings estimate. Should be close to current analyst mean price target if available.
+    - Bull case: apply multiple expansion or earnings acceleration scenario consistent with the upside catalysts identified. Must be above current price.
+    - Each rationale is one sentence maximum explaining the key assumption driving that price target.
+    - Express all three as specific dollar amounts, not ranges.
+    - Exactly 3 upside catalysts, one crisp sentence each. These should be specific near-term or medium-term events or factors that could drive the stock toward the bull case price target — earnings beats, product launches, market share gains, margin expansion, M&A, regulatory approvals, macro tailwinds. Do not repeat what is already stated in the bull case rationale — add specificity and depth.
+    - Exactly 3 key risks, one crisp sentence each. These should be specific factors that could drive the stock toward the bear case price target. Do not repeat what is already stated in the bear case rationale — add specificity and depth.
+    - Upside catalysts and key risks should complement the Bear/Base/Bull scenarios already in the report, not duplicate them."""
 
     messages = conversation_history + [{
         "role": "user",
@@ -1247,7 +1322,7 @@ def generate_research_report(ticker, conversation_history, data_summary, status)
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=2048,
+        max_tokens=4096,
         system=system_prompt,
         tools=[research_report_tool],
         tool_choice={"type": "tool", "name": "produce_research_report"},
@@ -1283,6 +1358,23 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
   {r['one_line_summary']}
 
   Rationale: {r['ai_rating_rationale']}
+{div}
+  PRICE TARGET SCENARIOS
+{thin}"""
+
+    _cur_txt = r.get('current_price', 0) or 1
+    for _label, _price_key, _rat_key in [
+        ("Bear Case", "bear_case_price", "bear_case_rationale"),
+        ("Base Case", "base_case_price", "base_case_rationale"),
+        ("Bull Case", "bull_case_price", "bull_case_rationale"),
+    ]:
+        _p   = r.get(_price_key, 0)
+        _pct = (_p - _cur_txt) / _cur_txt * 100
+        _rat = r.get(_rat_key, 'N/A')
+        output += f"\n  {_label:<12}${_p:.2f}  ({_pct:+.1f}% vs current)"
+        output += f"\n  {'':12}{_rat}\n"
+
+    output += f"""
 {div}
   PRICE & PERFORMANCE
 {thin}{row('Current Price:', f"${r['current_price']:.2f}")}{row('52-Week Range:', f"{r['fifty_two_week_low']} – {r['fifty_two_week_high']}")}{row('1-Year Return:', f"{r['one_year_return_pct']:.1f}%")}{row('5-Year Return:', f"{r['five_year_return_pct']:.1f}%")}{row('Market Cap:', r['market_cap'])}
@@ -1336,7 +1428,7 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
                 row_str += f"{val:>{COL_W}}"
             comp_block += row_str
         comp_block += f"\n{thin2}"
-        output += f"\n{div}\n  COMPARABLE COMPANIES ANALYSIS"
+        output += f"\n{div}\n  TOP 10 VALUE INVESTOR FUNDAMENTALS & COMPARABLE ANALYSIS"
         output += comp_block
 
     if analyst_targets and any(v for v in analyst_targets.values() if v):
@@ -1374,11 +1466,25 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
 {div}
   INVESTMENT THESIS
 {thin}
-  {r['investment_thesis']}
+  {r.get('investment_thesis', 'N/A')}
 {div}
-  KEY RISKS
-{thin}"""
-    for i, risk in enumerate(r['key_risks'], 1):
+  MOAT ANALYSIS
+{thin}
+  Moat Rating: {r.get('moat_rating', 'N/A')}
+
+  Moat Description: {r.get('moat_exists', 'N/A')}
+
+  Sustainability: {r.get('moat_sustainability', 'N/A')}
+
+  Competitive threats: {r.get('moat_risks', 'N/A')}
+{div}
+  UPSIDE CATALYSTS & KEY RISKS
+{thin}
+  Upside Catalysts:"""
+    for i, cat in enumerate(r.get('upside_catalysts', []), 1):
+        output += f"\n  {i}. {cat}"
+    output += f"\n\n  Key Risks:"
+    for i, risk in enumerate(r.get('key_risks', []), 1):
         output += f"\n  {i}. {risk}"
     output += f"""
 {div}
@@ -1398,15 +1504,14 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     period_code = PERIOD_MAP[chart_period]
     st.divider()
 
-    # Rating + headline
+    # Rating emoji helper
     rating_colors = {
-        "Strong Buy":  "🟢", "Buy": "🟩",
-        "Hold": "🟡", "Sell": "🟠", "Strong Sell": "🔴"
+        "Strong Buy": "🟢", "Buy": "🟢",
+        "Hold": "🟡", "Sell": "🔴", "Strong Sell": "🔴",
     }
-    emoji = rating_colors.get(report['ai_rating'], "⚪")
+    ai_emoji = rating_colors.get(report.get('ai_rating', ''), "⚪")
 
-    # Pre-compute analyst consensus so it can sit alongside AI Rating in the header
-    _show_cons = False
+    # Analyst consensus counts (default 0 when no data)
     _n_bull = _n_neut = _n_bear = 0
     if analyst_recs is not None and not analyst_recs.empty:
         _cf = analyst_recs.copy()
@@ -1421,28 +1526,79 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
             _n_bull = int(_rv.apply(lambda r: any(k in r for k in _bull_kws)).sum())
             _n_neut = int(_rv.apply(lambda r: any(k in r for k in _neut_kws)).sum())
             _n_bear = int(_rv.apply(lambda r: any(k in r for k in _bear_kws)).sum())
-            _show_cons = True
 
-    col1, col2, col3, col4 = st.columns([2, 1, 1, 3])
-    with col1:
-        st.subheader(f"{report['company_name']} ({report['ticker']})")
-        st.caption(f"{report['sector']} | {report['industry']}")
-    with col2:
-        st.caption("AI Rating")
-        st.subheader(f"{emoji} {report['ai_rating']}")
-    with col3:
-        st.caption("Current Price")
-        st.subheader(f"${report['current_price']:.2f}")
-    with col4:
-        if _show_cons:
-            st.caption("Analyst Consensus")
-            _ca, _cb, _cc = st.columns(3)
-            _ca.subheader(f"🟢 {_n_bull} Bullish")
-            _cb.subheader(f"🟡 {_n_neut} Neutral")
-            _cc.subheader(f"🔴 {_n_bear} Bearish")
+    # ROW 1 — company info
+    st.subheader(f"{report['company_name']} ({report['ticker']})")
+    st.caption(f"{report['sector']} | {report['industry']}")
 
-    st.info(f"**{report['one_line_summary']}**")
-    st.caption(f"Rating rationale: {report['ai_rating_rationale']}")
+    # ROW 2 — rating lights: emoji on top, label below
+    def _rating_cell(emoji, subtext):
+        return (
+            f"<div style='text-align:center'>"
+            f"<p style='font-size:1.5rem;margin:0;line-height:1.1'>{emoji}</p>"
+            f"<p style='font-size:0.85rem;font-weight:600;margin:3px 0 0 0'>{subtext}</p>"
+            f"</div>"
+        )
+
+    stat_left, sep_col, stat_right = st.columns([10, 1, 30])
+    with stat_left:
+        st.markdown(
+            "<p style='text-align:center;font-size:0.75rem;color:#6b7280;"
+            "margin:0 0 4px 0'>AI Rating</p>",
+            unsafe_allow_html=True
+        )
+        st.markdown(_rating_cell(ai_emoji, report.get('ai_rating', '—')),
+                    unsafe_allow_html=True)
+    with sep_col:
+        st.markdown(
+            "<div style='width:1px;background:#e5e7eb;height:72px;margin:0 auto'></div>",
+            unsafe_allow_html=True
+        )
+    with stat_right:
+        st.markdown(
+            "<p style='text-align:center;font-size:0.75rem;color:#6b7280;"
+            "margin:0 0 4px 0'>Analyst Ratings</p>",
+            unsafe_allow_html=True
+        )
+        _ca, _cb, _cc = st.columns(3)
+        _ca.markdown(_rating_cell("🟢", f"{_n_bull} Bullish"), unsafe_allow_html=True)
+        _cb.markdown(_rating_cell("🟡", f"{_n_neut} Neutral"), unsafe_allow_html=True)
+        _cc.markdown(_rating_cell("🔴", f"{_n_bear} Bearish"), unsafe_allow_html=True)
+
+    st.info(
+        f"- {report.get('one_line_summary', 'N/A')}\n"
+        f"- Rating Rationale: {report.get('ai_rating_rationale', 'N/A')}"
+    )
+    st.divider()
+
+    # Price Target Scenarios
+    st.subheader("Price Target Scenarios")
+    _cur = report.get('current_price', 0) or 1
+    _bear_p = report.get('bear_case_price', 0)
+    _base_p = report.get('base_case_price', 0)
+    _bull_p = report.get('bull_case_price', 0)
+
+    pt1, pt2, pt3 = st.columns(3)
+    pt1.metric(
+        label="Bear Case",
+        value=f"${_bear_p:.2f}",
+        delta=f"{((_bear_p - _cur) / _cur * 100):.1f}% vs current"
+    )
+    pt2.metric(
+        label="Base Case",
+        value=f"${_base_p:.2f}",
+        delta=f"{((_base_p - _cur) / _cur * 100):.1f}% vs current"
+    )
+    pt3.metric(
+        label="Bull Case",
+        value=f"${_bull_p:.2f}",
+        delta=f"{((_bull_p - _cur) / _cur * 100):.1f}% vs current"
+    )
+
+    rc1, rc2, rc3 = st.columns(3)
+    rc1.caption(f"_{report.get('bear_case_rationale', 'N/A')}_")
+    rc2.caption(f"_{report.get('base_case_rationale', 'N/A')}_")
+    rc3.caption(f"_{report.get('bull_case_rationale', 'N/A')}_")
     st.divider()
 
     # Performance
@@ -1461,7 +1617,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
         st.caption("Market Cap")
         st.subheader(report['market_cap'])
     with p5:
-        st.caption("52-Wk Range")
+        st.caption("52-Week Range")
         st.subheader(f"{report['fifty_two_week_low']} – {report['fifty_two_week_high']}")
     st.divider()
 
@@ -1490,88 +1646,9 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
         st.warning("Could not load chart data.")
     st.divider()
 
-    # Fundamentals
-    st.subheader("Top 10 Value Investor Fundamentals")
-    fund_c1, fund_c2 = st.columns(2)
-
-    _tbl_css = """
-    <style>
-    .fund-table { width:100%; border-collapse:collapse; font-size:0.875rem; }
-    .fund-table th {
-        background:#f0f0f0; text-align:left; padding:6px 10px;
-        font-weight:600; border-bottom:2px solid #ddd;
-    }
-    .fund-table td { padding:6px 10px; border-bottom:1px solid #eee; }
-    .fund-table tr:last-child td { border-bottom:none; }
-    .fund-table td.metric { cursor:help; }
-    </style>
-    """
-    st.markdown(_tbl_css, unsafe_allow_html=True)
-
-    _val_rows = [
-        ("1. Trailing P/E",
-         "Price-to-Earnings (Trailing): Current stock price divided by earnings per share over the last 12 months (TTM). Lower = cheaper relative to current earnings.",
-         report.get('trailing_pe', 'N/A')),
-        ("2. Forward P/E",
-         "Price-to-Earnings (Forward): Current stock price divided by analyst consensus EPS estimate for the next 12 months. Reflects market expectations for future earnings growth.",
-         report.get('forward_pe', 'N/A')),
-        ("3. EV/EBITDA",
-         "Enterprise Value to EBITDA: Total company value (market cap + debt - cash) divided by earnings before interest, taxes, depreciation and amortization over the last 12 months. Capital-structure-neutral valuation multiple.",
-         report.get('ev_ebitda', 'N/A')),
-        ("4. Price/Book",
-         "Price-to-Book: Current stock price divided by book value per share (assets minus liabilities) as of the most recent quarter. Values below 1.0 suggest the stock trades below net asset value.",
-         report.get('price_to_book', 'N/A')),
-        ("5. Price/FCF",
-         "Price-to-Free Cash Flow: Market capitalization divided by free cash flow over the last 12 months. Measures how many years of free cash flow you are paying for the business.",
-         report.get('price_to_fcf', 'N/A')),
-    ]
-    _qual_rows = [
-        ("6. Operating Margin",
-         "Operating Margin: Operating income divided by revenue over the last 12 months. Measures what percentage of revenue survives after paying operating costs. Higher = stronger competitive position.",
-         report.get('operating_margin', 'N/A')),
-        ("7. ROIC",
-         "ROIC = NOPAT / Invested Capital, where NOPAT = Operating Income minus taxes paid (tax benefits treated as zero). Invested Capital = Equity + Total Debt - Cash.",
-         report.get('roic', 'N/A')),
-        ("8. Return on Equity",
-         "Return on Equity (ROE): Net income divided by shareholders equity over the last 12 months. Measures how efficiently management generates profit from shareholders' money.",
-         report.get('return_on_equity', 'N/A')),
-        ("9. Revenue Growth",
-         "Revenue Growth (YoY): Year-over-year revenue growth comparing the most recent quarter to the same quarter in the prior year.",
-         report.get('revenue_growth_yoy', 'N/A')),
-        ("10. Debt/Equity",
-         "Debt-to-Equity: Total debt divided by shareholders equity as of the most recent quarter. Measures financial leverage. Higher values mean more debt relative to equity capital.",
-         report.get('debt_to_equity', 'N/A')),
-        ("11. FCF Yield",
-         "Free Cash Flow Yield: Free cash flow over the last 12 months divided by current market capitalization. The cash return you receive on the market price — the inverse of Price/FCF.",
-         report.get('fcf_yield', 'N/A')),
-    ]
-
-    def _fund_html(header_label, rows, ticker):
-        rows_html = "".join(
-            f'<tr><td class="metric" title="{tip}">{label}</td><td>{val}</td></tr>'
-            for label, tip, val in rows
-        )
-        return (
-            f'<table class="fund-table">'
-            f'<thead><tr><th>Metric</th><th>{ticker}</th></tr></thead>'
-            f'<tbody>{rows_html}</tbody>'
-            f'</table>'
-        )
-
-    with fund_c1:
-        st.markdown("**Valuation**")
-        st.markdown(_fund_html("Valuation", _val_rows, report['ticker']),
-                    unsafe_allow_html=True)
-
-    with fund_c2:
-        st.markdown("**Quality & Growth**")
-        st.markdown(_fund_html("Quality & Growth", _qual_rows, report['ticker']),
-                    unsafe_allow_html=True)
-
     # Comps
     if comps_data:
-        st.divider()
-        st.subheader("Comparable Companies Analysis")
+        st.subheader("Top 10 Value Investor Fundamentals & Comparable Analysis")
         all_tickers = [report['ticker']] + list(comps_data.keys())
         all_data    = {report['ticker']: subject_fund, **comps_data}
 
@@ -1612,6 +1689,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
             st.dataframe(build_comp_df(metrics_qual),
                          hide_index=True, width='stretch')
         st.caption(f"★ = subject company ({report['ticker']})")
+        st.divider()
 
     # ── Analyst Recommendations ───────────────────────────────
     has_targets = analyst_targets and any(
@@ -1684,15 +1762,30 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
 
     st.divider()
 
-    # Thesis and risks
-    thesis_col, risks_col = st.columns(2)
-    with thesis_col:
-        st.subheader("Investment Thesis")
-        st.write(report['investment_thesis'])
-    with risks_col:
-        st.subheader("Key Risks")
-        for i, risk in enumerate(report['key_risks'], 1):
-            st.warning(f"**{i}.** {risk}")
+    # Investment Thesis (full width)
+    st.subheader("Investment Thesis")
+    st.write(report.get('investment_thesis', 'N/A'))
+    st.divider()
+
+    # Moat Analysis (full width)
+    st.subheader("Moat Analysis")
+    st.write(f"**Moat Description:** {report.get('moat_exists', 'N/A')}")
+    st.write(f"**Sustainability:** {report.get('moat_sustainability', 'N/A')}")
+    st.write(f"**Competitive threats:** {report.get('moat_risks', 'N/A')}")
+    st.divider()
+
+    # Upside Catalysts & Key Risks (full width)
+    st.subheader("Upside Catalysts & Key Risks")
+
+    st.markdown("**Upside Catalysts**")
+    for i, catalyst in enumerate(report.get('upside_catalysts', []), 1):
+        st.success(f"🟢 {i}. {catalyst}")
+
+    st.write("")
+
+    st.markdown("**Key Risks**")
+    for i, risk in enumerate(report.get('key_risks', []), 1):
+        st.error(f"🔴 {i}. {risk}")
 
     st.divider()
 

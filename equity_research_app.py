@@ -717,6 +717,13 @@ def generate_pdf(report, subject_fund, comps_data,
         pct = (price - _cur_p) / _cur_p * 100
         return f"{pct:+.1f}% vs current"
 
+    s_pt_price  = style("pt_price",  fontSize=9,   leading=14,  alignment=TA_CENTER)
+    s_pt_pct    = style("pt_pct",    fontSize=7.5, leading=11,
+                        textColor=colors.HexColor("#666666"),  alignment=TA_CENTER)
+    s_pt_rationale = style("pt_rationale", fontSize=7.5, fontName="Helvetica-Oblique",
+                           leading=11, textColor=colors.HexColor("#666666"),
+                           alignment=TA_CENTER)
+
     pt_col_w = W / 3
     pt_tbl = Table(
         [
@@ -726,27 +733,24 @@ def generate_pdf(report, subject_fund, comps_data,
                 Paragraph("Bull Case", s_scenario_hdr),
             ],
             [
-                Paragraph(f"${_bear_p:.2f}", s_body),
-                Paragraph(f"${_base_p:.2f}", s_body),
-                Paragraph(f"${_bull_p:.2f}", s_body),
+                Paragraph(f"${_bear_p:.2f}", s_pt_price),
+                Paragraph(f"${_base_p:.2f}", s_pt_price),
+                Paragraph(f"${_bull_p:.2f}", s_pt_price),
             ],
             [
-                Paragraph(_pct_vs(_bear_p), s_small),
-                Paragraph(_pct_vs(_base_p), s_small),
-                Paragraph(_pct_vs(_bull_p), s_small),
+                Paragraph(_pct_vs(_bear_p), s_pt_pct),
+                Paragraph(_pct_vs(_base_p), s_pt_pct),
+                Paragraph(_pct_vs(_bull_p), s_pt_pct),
             ],
             [
-                Paragraph(report.get('bear_case_rationale', 'N/A'), s_italic),
-                Paragraph(report.get('base_case_rationale', 'N/A'), s_italic),
-                Paragraph(report.get('bull_case_rationale', 'N/A'), s_italic),
+                Paragraph(report.get('bear_case_rationale', 'N/A'), s_pt_rationale),
+                Paragraph(report.get('base_case_rationale', 'N/A'), s_pt_rationale),
+                Paragraph(report.get('bull_case_rationale', 'N/A'), s_pt_rationale),
             ],
         ],
         colWidths=[pt_col_w, pt_col_w, pt_col_w]
     )
     pt_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (0, -1), colors.HexColor("#FFDEDE")),
-        ("BACKGROUND",    (1, 0), (1, -1), colors.HexColor("#F5F5F5")),
-        ("BACKGROUND",    (2, 0), (2, -1), colors.HexColor("#D4EDDA")),
         ("FONTNAME",      (0, 0), (-1,  0), "Helvetica-Bold"),
         ("FONTSIZE",      (0, 0), (-1,  0), 9),
         ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
@@ -810,12 +814,14 @@ def generate_pdf(report, subject_fund, comps_data,
         all_tickers = [report['ticker']] + list(comps_data.keys())
         all_data    = {report['ticker']: subject_fund, **comps_data}
 
-        metric_keys = [
+        val_metric_keys = [
             ("Trailing P/E",  "1_trailing_pe"),
             ("Forward P/E",   "2_forward_pe"),
             ("EV/EBITDA",     "3_ev_ebitda"),
             ("Price/Book",    "4_price_to_book"),
             ("Price/FCF",     "5_price_to_fcf"),
+        ]
+        qual_metric_keys = [
             ("Oper. Margin",  "6_operating_margin"),
             ("ROIC",          "7_roic"),
             ("ROE",           "8_return_on_equity"),
@@ -823,50 +829,81 @@ def generate_pdf(report, subject_fund, comps_data,
             ("Debt/Equity",   "10_debt_to_equity"),
             ("FCF Yield",     "11_fcf_yield"),
         ]
+
         comp_header = ["Metric"] + [
             f"*{t}" if t == report['ticker'] else t
             for t in all_tickers
         ]
-        comp_rows = []
-        for label, key in metric_keys:
-            row = [label]
-            for t in all_tickers:
-                d = all_data.get(t)
-                row.append(d.get(key, "N/A") if d else "N/A")
-            comp_rows.append(row)
 
-        comp_data_full = [comp_header] + comp_rows
+        def build_comp_rows(keys):
+            rows = []
+            for label, key in keys:
+                row = [label]
+                for t in all_tickers:
+                    d = all_data.get(t)
+                    row.append(d.get(key, "N/A") if d else "N/A")
+                rows.append(row)
+            return rows
+
+        def build_comp_style(data_full):
+            cmds = [
+                ("BACKGROUND",    (0, 0), (-1, 0), colors.HexColor("#111111")),
+                ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
+                ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE",      (0, 0), (-1, 0), 8),
+                ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+                ("ALIGN",         (0, 1), (0, -1),  "LEFT"),
+                ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+                ("FONTSIZE",      (0, 1), (-1, -1), 8),
+                ("GRID",          (0, 0), (-1, -1), 0.3, colors.HexColor("#dddddd")),
+                ("TOPPADDING",    (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+                ("FONTNAME",      (1, 1), (1, -1), "Helvetica-Bold"),
+            ]
+            for i in range(2, len(data_full), 2):
+                cmds.append(
+                    ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#f9f9f9"))
+                )
+            return cmds
+
         n_comps    = len(all_tickers)
-        metric_col = 1.1 * inch
-        ticker_col = (W - metric_col) / n_comps
+        half_w     = W / 2 - 0.1 * inch
+        metric_col = 0.9 * inch
+        ticker_col = (half_w - metric_col) / n_comps
+        col_widths = [metric_col] + [ticker_col] * n_comps
 
-        style_cmds = [
-            ("BACKGROUND",    (0, 0), (-1, 0), colors.HexColor("#111111")),
-            ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
-            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE",      (0, 0), (-1, 0), 8),
-            ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
-            ("ALIGN",         (0, 1), (0, -1),  "LEFT"),
-            ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
-            ("FONTSIZE",      (0, 1), (-1, -1), 8),
-            ("GRID",          (0, 0), (-1, -1), 0.3, colors.HexColor("#dddddd")),
-            ("TOPPADDING",    (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
-            ("FONTNAME",      (1, 1), (1, -1), "Helvetica-Bold"),
-        ]
-        for i in range(2, len(comp_data_full), 2):
-            style_cmds.append(
-                ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#f9f9f9"))
-            )
-        comp_tbl = Table(comp_data_full,
-                         colWidths=[metric_col] + [ticker_col] * n_comps)
-        comp_tbl.setStyle(TableStyle(style_cmds))
+        val_data  = [comp_header] + build_comp_rows(val_metric_keys)
+        qual_data = [comp_header] + build_comp_rows(qual_metric_keys)
+
+        val_comp_tbl  = Table(val_data,  colWidths=col_widths)
+        qual_comp_tbl = Table(qual_data, colWidths=col_widths)
+        val_comp_tbl.setStyle(TableStyle(build_comp_style(val_data)))
+        qual_comp_tbl.setStyle(TableStyle(build_comp_style(qual_data)))
+
+        s_comp_lbl = style("comp_lbl", fontName="Helvetica-Bold",
+                           fontSize=9, spaceBefore=4, spaceAfter=4)
+
+        comp_layout = Table(
+            [
+                [Paragraph("Valuation", s_comp_lbl),
+                 Paragraph("Quality &amp; Growth", s_comp_lbl)],
+                [val_comp_tbl, qual_comp_tbl],
+            ],
+            colWidths=[W / 2, W / 2],
+        )
+        comp_layout.setStyle(TableStyle([
+            ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING",   (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
+        ]))
 
         story.append(KeepTogether([
             Paragraph("TOP 10 VALUE INVESTOR FUNDAMENTALS &amp; COMPARABLE ANALYSIS", s_section),
-            comp_tbl,
+            comp_layout,
             Paragraph(f"* = subject company ({report['ticker']})", s_small),
             Spacer(1, 6),
             hr(),
@@ -1323,6 +1360,7 @@ def generate_research_report(ticker, conversation_history, data_summary, status)
     response = client.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=4096,
+        temperature=0,
         system=system_prompt,
         tools=[research_report_tool],
         tool_choice={"type": "tool", "name": "produce_research_report"},

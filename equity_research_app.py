@@ -5,7 +5,7 @@ import io
 import pandas as pd
 from dotenv import load_dotenv
 import anthropic
-import yfinance as yf
+import requests
 import plotly.graph_objects as go
 import matplotlib
 matplotlib.use("Agg")
@@ -30,6 +30,38 @@ if not api_key:
     except Exception:
         pass
 client = anthropic.Anthropic(api_key=api_key)
+
+fmp_api_key = os.environ.get("FMP_API_KEY")
+if not fmp_api_key:
+    try:
+        fmp_api_key = st.secrets["FMP_API_KEY"]
+    except Exception:
+        pass
+
+FMP_BASE = "https://financialmodelingprep.com/stable"
+
+
+def fmp_get(endpoint, params=None):
+    try:
+        api_key = os.environ.get("FMP_API_KEY")
+        if not api_key:
+            try:
+                api_key = st.secrets["FMP_API_KEY"]
+            except Exception:
+                pass
+        if not api_key:
+            return None
+        url = f"{FMP_BASE}{endpoint}"
+        p = {"apikey": api_key}
+        if params:
+            p.update(params)
+        r = requests.get(url, params=p, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        return None
+    except Exception:
+        return None
+
 
 # ─── CONSTANTS ───────────────────────────────────────────────
 
@@ -65,12 +97,14 @@ ACTION_MAP = {
 
 def get_stock_price(ticker):
     try:
-        stock = yf.Ticker(ticker)
-        data  = stock.history(period="5d")
-        if data.empty:
+        data = fmp_get("/quote", {"symbol": ticker})
+        if not data or len(data) == 0:
             return f"Error: No data found for {ticker}"
-        price = data["Close"].iloc[-1]
-        date  = data.index[-1].date()
+        q = data[0]
+        price = q.get("price", 0)
+        from datetime import datetime
+        ts = q.get("timestamp")
+        date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "N/A"
         return f"{ticker} most recent price: ${price:.2f} (as of {date})"
     except Exception as e:
         return f"Error fetching {ticker}: {str(e)}"
@@ -78,15 +112,15 @@ def get_stock_price(ticker):
 
 def get_historical_return(ticker, years):
     try:
-        stock = yf.Ticker(ticker)
-        data  = stock.history(period=f"{years + 1}y")
-        if data.empty or len(data) < 2:
+        data = fmp_get("/historical-price-eod/light", {"symbol": ticker})
+        if not data or len(data) == 0:
             return f"Error: Insufficient data for {ticker}"
-        start_price  = data["Close"].iloc[0]
-        end_price    = data["Close"].iloc[-1]
+        end_price = data[0]["price"]
+        end_date = data[0]["date"]
+        target_idx = min(len(data) - 1, int(years) * 252)
+        start_price = data[target_idx]["price"]
+        start_date = data[target_idx]["date"]
         total_return = ((end_price - start_price) / start_price) * 100
-        start_date   = data.index[0].date()
-        end_date     = data.index[-1].date()
         return (f"{ticker} {years}-year return: {total_return:.2f}% "
                 f"(${start_price:.2f} to ${end_price:.2f}, "
                 f"{start_date} to {end_date})")
@@ -94,138 +128,97 @@ def get_historical_return(ticker, years):
         return f"Error computing return for {ticker}: {str(e)}"
 
 
+def calc_roic_fmp(ticker):
+    try:
+        income = fmp_get("/income-statement", {"symbol": ticker, "limit": 1})
+        balance = fmp_get("/balance-sheet-statement", {"symbol": ticker, "limit": 1})
+        if not income or not balance or len(income) == 0 or len(balance) == 0:
+            return "N/A"
+        inc = income[0]
+        bal = balance[0]
+        op_income = inc.get("operatingIncome", 0)
+        tax_provision = inc.get("incomeTaxExpense", 0)
+        equity = bal.get("totalStockholdersEquity", 0)
+        debt = bal.get("longTermDebt", 0)
+        cash = bal.get("cashAndCashEquivalents", 0)
+        if not op_income or not equity:
+            return "N/A"
+        nopat = op_income - max(0, tax_provision)
+        invested_capital = equity + (debt or 0) - (cash or 0)
+        if invested_capital <= 0:
+            return "N/A"
+        roic = (nopat / invested_capital) * 100
+        return f"{roic:.1f}%"
+    except Exception:
+        return "N/A"
+
+
 def get_fundamentals(ticker):
     try:
-        stock = yf.Ticker(ticker)
-        info  = stock.info
-        if (not info
-                or (info.get("regularMarketPrice") is None
-                    and info.get("currentPrice") is None
-                    and info.get("previousClose") is None)):
+        profile_data = fmp_get("/profile", {"symbol": ticker})
+        ratios_data  = fmp_get("/ratios-ttm", {"symbol": ticker})
+        quote_data   = fmp_get("/quote", {"symbol": ticker})
+
+        if not profile_data or len(profile_data) == 0:
+            return None
+
+        p = profile_data[0]
+        r = ratios_data[0] if ratios_data and len(ratios_data) > 0 else {}
+        q = quote_data[0] if quote_data and len(quote_data) > 0 else {}
+
+        if not p.get("companyName"):
             return None
 
         def pct(val):
-            return "N/A" if val is None else f"{val * 100:.1f}%"
+            return "N/A" if not val else f"{val * 100:.1f}%"
 
         def multiple(val, decimals=1):
-            return "N/A" if val is None else f"{val:.{decimals}f}x"
+            return "N/A" if not val else f"{val:.{decimals}f}x"
 
         def dollar_b(val):
-            return "N/A" if val is None else f"${val / 1e9:.1f}B"
+            return "N/A" if not val else f"${val / 1e9:.1f}B"
 
-        market_cap       = info.get("marketCap")
-        enterprise_value = info.get("enterpriseValue")
-        ebitda           = info.get("ebitda")
-        free_cashflow    = info.get("freeCashflow")
-
-        ev_ebitda    = None
-        price_to_fcf = None
-        fcf_yield    = None
-
-        if enterprise_value and ebitda and ebitda > 0:
-            ev_ebitda = enterprise_value / ebitda
-        if market_cap and free_cashflow and free_cashflow > 0:
-            price_to_fcf = market_cap / free_cashflow
-        if market_cap and free_cashflow and market_cap > 0:
-            fcf_yield = free_cashflow / market_cap
-
-        def calc_roic(stock):
-            try:
-                bs  = stock.balance_sheet
-                fin = stock.financials
-                if bs is None or fin is None or bs.empty or fin.empty:
-                    return "N/A"
-
-                op_income = (fin.loc["Operating Income"].iloc[0]
-                             if "Operating Income" in fin.index else None)
-
-                tax_provision = (fin.loc["Tax Provision"].iloc[0]
-                                 if "Tax Provision" in fin.index else None)
-
-                if not op_income:
-                    return "N/A"
-
-                # NOPAT = Operating Income - taxes paid (floor tax benefit at zero)
-                # Negative tax provision = government tax benefit = treat as zero tax paid
-                tax_paid = max(0, tax_provision) if tax_provision is not None else op_income * 0.21
-                nopat = op_income - tax_paid
-
-                # Invested Capital = Equity + Total Debt - Cash
-                equity = (bs.loc["Stockholders Equity"].iloc[0]
-                          if "Stockholders Equity" in bs.index else None)
-                debt   = (bs.loc["Long Term Debt"].iloc[0]
-                          if "Long Term Debt" in bs.index else 0)
-                cash   = (bs.loc["Cash And Cash Equivalents"].iloc[0]
-                          if "Cash And Cash Equivalents" in bs.index else 0)
-
-                if equity:
-                    invested_capital = equity + (debt or 0) - (cash or 0)
-                    if invested_capital > 0:
-                        roic = (nopat / invested_capital) * 100
-                        return f"{roic:.1f}%"
-                return "N/A"
-            except Exception:
-                return "N/A"
+        roic = calc_roic_fmp(ticker)
 
         return {
-            "company_name":        info.get("longName", ticker),
-            "sector":              info.get("sector", "N/A"),
-            "industry":            info.get("industry", "N/A"),
-            "market_cap":          dollar_b(market_cap),
-            "fifty_two_week_high": f"${info.get('fiftyTwoWeekHigh', 0):.2f}",
-            "fifty_two_week_low":  f"${info.get('fiftyTwoWeekLow', 0):.2f}",
-            "1_trailing_pe":       multiple(info.get("trailingPE")),
-            "2_forward_pe":        multiple(info.get("forwardPE")),
-            "3_ev_ebitda":         multiple(ev_ebitda),
-            "4_price_to_book":     multiple(info.get("priceToBook")),
-            "5_price_to_fcf":      multiple(price_to_fcf),
-            "6_operating_margin":  pct(info.get("operatingMargins")),
-            "7_roic":              calc_roic(stock),
-            "8_return_on_equity":  pct(info.get("returnOnEquity")),
-            "9_revenue_growth":    pct(info.get("revenueGrowth")),
-            "10_debt_to_equity":   multiple(info.get("debtToEquity"), decimals=2),
-            "11_fcf_yield":        pct(fcf_yield),
+            "company_name":        p.get("companyName", ticker),
+            "sector":              p.get("sector", "N/A"),
+            "industry":            p.get("industry", "N/A"),
+            "market_cap":          dollar_b(p.get("mktCap")),
+            "fifty_two_week_high": f"${q.get('yearHigh', 0):.2f}" if q.get("yearHigh") else "N/A",
+            "fifty_two_week_low":  f"${q.get('yearLow', 0):.2f}"  if q.get("yearLow")  else "N/A",
+            "1_trailing_pe":       multiple(r.get("priceToEarningsRatioTTM")),
+            "2_forward_pe":        multiple(r.get("priceEarningsToGrowthRatioTTM")),
+            "3_ev_ebitda":         multiple(r.get("enterpriseValueMultipleTTM")),
+            "4_price_to_book":     multiple(r.get("priceToBookRatioTTM")),
+            "5_price_to_fcf":      multiple(r.get("priceToFreeCashFlowRatioTTM")),
+            "6_operating_margin":  pct(r.get("operatingProfitMarginTTM")),
+            "7_roic":              roic,
+            "8_return_on_equity":  pct(r.get("returnOnEquityTTM")),
+            "9_revenue_growth":    pct(r.get("revenueGrowthTTM")),
+            "10_debt_to_equity":   multiple(r.get("debtToEquityRatioTTM"), decimals=2),
+            "11_fcf_yield":        pct(r.get("freeCashFlowYieldTTM")),
         }
     except Exception:
         return None
 
 
 def validate_ticker(ticker):
-    import time
-    for attempt in range(2):
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            if info and len(info) > 5:
-                return True, info.get("longName", ticker)
-            if attempt == 0:
-                time.sleep(2)
-        except Exception:
-            if attempt == 0:
-                time.sleep(2)
-    return True, ticker  # Allow through with warning rather than blocking
+    result = get_fundamentals(ticker)
+    if result is None:
+        return False, None
+    return True, result.get("company_name", ticker)
 
 
 def get_comps_data(comp_tickers):
-    import time
     valid   = {}
     invalid = []
     for ticker in comp_tickers:
         ticker = ticker.upper().strip()
-        success = False
-        for attempt in range(2):
-            try:
-                result = get_fundamentals(ticker)
-                if result is not None:
-                    valid[ticker] = result
-                    success = True
-                    break
-                elif attempt == 0:
-                    time.sleep(1)
-            except Exception:
-                if attempt == 0:
-                    time.sleep(1)
-        if not success:
+        result = get_fundamentals(ticker)
+        if result is not None:
+            valid[ticker] = result
+        else:
             invalid.append(ticker)
     return valid, invalid
 
@@ -234,109 +227,85 @@ def get_comps_data(comp_tickers):
 
 def get_analyst_data(ticker):
     try:
-        stock = yf.Ticker(ticker)
-
-        # Price targets
         targets = {}
         try:
-            pt = stock.analyst_price_targets
-            if pt and isinstance(pt, dict):
+            pt = fmp_get("/price-target-consensus", {"symbol": ticker})
+            if pt and len(pt) > 0:
+                t = pt[0]
                 targets = {
-                    "mean":   pt.get("mean"),
-                    "high":   pt.get("high"),
-                    "low":    pt.get("low"),
-                    "median": pt.get("median"),
+                    "mean":   t.get("targetConsensus"),
+                    "high":   t.get("targetHigh"),
+                    "low":    t.get("targetLow"),
+                    "median": t.get("targetMedian"),
                 }
         except Exception:
             pass
 
-        # Upgrade / downgrade history — last 3 months
         recs_df = None
-        cutoff  = datetime.now() - timedelta(days=90)
-
         try:
-            raw = stock.upgrades_downgrades
-            if raw is not None and not raw.empty:
-                raw = raw.copy()
-                if hasattr(raw.index, "tz") and raw.index.tz is not None:
-                    raw.index = raw.index.tz_convert(None)
-
-                raw = raw[raw.index >= cutoff]
-
-                if not raw.empty:
-                    raw = raw.reset_index()
-                    date_col   = next((c for c in raw.columns
-                                       if "date" in c.lower()), None)
-                    firm_col   = next((c for c in raw.columns
-                                       if "firm" in c.lower()), None)
-                    to_col     = next((c for c in raw.columns
-                                       if "tograde" in c.lower()
-                                       or "to grade" in c.lower()), None)
-                    from_col   = next((c for c in raw.columns
-                                       if "fromgrade" in c.lower()
-                                       or "from grade" in c.lower()), None)
-                    action_col = next((c for c in raw.columns
-                                       if "action" in c.lower()), None)
-
-                    if date_col and firm_col and to_col:
-                        raw_actions = (
-                            raw[action_col].str.capitalize()
-                            if action_col
-                            else pd.Series([""] * len(raw))
-                        )
-                        recs_df = pd.DataFrame({
-                            "Date":      pd.to_datetime(raw[date_col]).dt.date,
-                            "Firm":      raw[firm_col].str.strip(),
-                            "Rating":    raw[to_col].str.strip(),
-                            "FromGrade": (raw[from_col].str.strip()
-                                          if from_col else ""),
-                            "Action":    raw_actions.map(
-                                          lambda x: ACTION_MAP.get(x, x)
-                                         ),
-                        })
-                        recs_df = recs_df.sort_values(
-                            "Date", ascending=False
-                        ).reset_index(drop=True)
-
+            from datetime import datetime, timedelta
+            cutoff = datetime.now() - timedelta(days=90)
+            raw = fmp_get("/grades", {"symbol": ticker})
+            if raw:
+                rows = []
+                for item in raw:
+                    date_str = item.get("date", "")[:10]
+                    if not date_str:
+                        continue
+                    try:
+                        item_date = datetime.strptime(date_str, "%Y-%m-%d")
+                    except Exception:
+                        continue
+                    if item_date < cutoff:
+                        continue
+                    rows.append({
+                        "Date":      date_str,
+                        "Firm":      item.get("gradingCompany", "").strip(),
+                        "Rating":    item.get("newGrade", "").strip(),
+                        "FromGrade": item.get("previousGrade", "").strip(),
+                        "Action":    item.get("action", "").strip(),
+                    })
+                if rows:
+                    recs_df = pd.DataFrame(rows)
+                    recs_df = recs_df.sort_values("Date", ascending=False).reset_index(drop=True)
         except Exception:
             pass
 
         return targets, recs_df
-
     except Exception:
         return {}, None
 
 
 def get_financial_history(ticker, years=4):
     try:
-        stock = yf.Ticker(ticker)
-        financials = stock.financials
-        if financials is None or financials.empty:
-            return f"No financial history available for {ticker}"
-
         years = min(int(years), 10)
-
+        income = fmp_get("/income-statement", {"symbol": ticker, "limit": years})
+        if not income:
+            return f"No financial history available for {ticker}"
         result = {}
-        rows_wanted = ["Total Revenue", "Net Income",
-                       "Operating Income", "Gross Profit"]
-        for row in rows_wanted:
-            if row in financials.index:
-                row_data = financials.loc[row].iloc[:years]
-                result[row] = {
-                    str(col.year): f"${val/1e9:.2f}B"
-                    for col, val in row_data.items()
-                    if val is not None and not pd.isna(val)
-                }
-
-        info = stock.info
+        rows = {
+            "Total Revenue":    "revenue",
+            "Net Income":       "netIncome",
+            "Operating Income": "operatingIncome",
+            "Gross Profit":     "grossProfit",
+        }
+        for label, key in rows.items():
+            result[label] = {}
+            for stmt in income:
+                year = stmt.get("fiscalYear", stmt.get("date", "")[:4])
+                val = stmt.get(key)
+                if val is not None:
+                    result[label][str(year)] = f"${val/1e9:.2f}B"
+        latest = income[0] if income else {}
         margins = {}
-        if info.get("grossMargins"):
-            margins["Gross Margin"] = f"{info['grossMargins']*100:.1f}%"
-        if info.get("operatingMargins"):
-            margins["Operating Margin"] = f"{info['operatingMargins']*100:.1f}%"
-        if info.get("profitMargins"):
-            margins["Net Margin"] = f"{info['profitMargins']*100:.1f}%"
-
+        rev = latest.get("revenue", 0)
+        if rev:
+            op = latest.get("operatingIncome", 0)
+            net = latest.get("netIncome", 0)
+            gross = latest.get("grossProfit", 0)
+            if gross: margins["Gross Margin"]     = f"{gross/rev*100:.1f}%"
+            if op:    margins["Operating Margin"] = f"{op/rev*100:.1f}%"
+            if net:   margins["Net Margin"]       = f"{net/rev*100:.1f}%"
         result["Current Margins"] = margins
         result["Years Shown"] = years
         return result
@@ -346,30 +315,22 @@ def get_financial_history(ticker, years=4):
 
 def get_recent_news(ticker, max_articles=5):
     try:
-        stock = yf.Ticker(ticker)
-        news = stock.news
-        if not news:
+        max_articles = min(int(max_articles), 10)
+        data = fmp_get("/stock_news", {"tickers": ticker, "limit": max_articles})
+        if not data:
             return f"No recent news found for {ticker}"
-
         articles = []
-        for item in news[:max_articles]:
-            article = {
+        for item in data[:max_articles]:
+            articles.append({
                 "title":     item.get("title", "No title"),
-                "publisher": item.get("publisher", "Unknown"),
-                "summary":   item.get("summary", "No summary available")[:300],
-                "published": (
-                    datetime.fromtimestamp(
-                        item.get("providerPublishTime", 0)
-                    ).strftime("%Y-%m-%d")
-                    if item.get("providerPublishTime") else "Unknown date"
-                ),
-            }
-            articles.append(article)
-
+                "publisher": item.get("site", "Unknown"),
+                "summary":   item.get("text", "")[:300],
+                "published": item.get("publishedDate", "")[:10]
+            })
         return {
             "ticker":        ticker,
             "article_count": len(articles),
-            "articles":      articles,
+            "articles":      articles
         }
     except Exception as e:
         return f"Error fetching news for {ticker}: {str(e)}"
@@ -390,9 +351,22 @@ def build_price_chart(subject_ticker, comp_tickers, period,
 
     def fetch(symbol, label):
         try:
-            data = yf.Ticker(symbol).history(period=period)
-            if not data.empty:
-                all_series[label] = data["Close"]
+            data = fmp_get("/historical-price-eod/light", {"symbol": symbol})
+            if data and len(data) > 0:
+                import pandas as pd
+                df = pd.DataFrame(data)
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.set_index("date").sort_index()
+                if period == "ytd":
+                    df = df[df.index.year == pd.Timestamp.now().year]
+                elif period == "1y":
+                    df = df[df.index >= pd.Timestamp.now() - pd.DateOffset(years=1)]
+                elif period == "3y":
+                    df = df[df.index >= pd.Timestamp.now() - pd.DateOffset(years=3)]
+                elif period == "5y":
+                    df = df[df.index >= pd.Timestamp.now() - pd.DateOffset(years=5)]
+                if not df.empty:
+                    all_series[label] = df["price"]
         except Exception:
             pass
 
@@ -466,9 +440,22 @@ def build_pdf_chart(subject_ticker, comp_tickers, period,
 
     def fetch(symbol, label):
         try:
-            data = yf.Ticker(symbol).history(period=period)
-            if not data.empty:
-                all_series[label] = data["Close"]
+            data = fmp_get("/historical-price-eod/light", {"symbol": symbol})
+            if data and len(data) > 0:
+                import pandas as pd
+                df = pd.DataFrame(data)
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.set_index("date").sort_index()
+                if period == "ytd":
+                    df = df[df.index.year == pd.Timestamp.now().year]
+                elif period == "1y":
+                    df = df[df.index >= pd.Timestamp.now() - pd.DateOffset(years=1)]
+                elif period == "3y":
+                    df = df[df.index >= pd.Timestamp.now() - pd.DateOffset(years=3)]
+                elif period == "5y":
+                    df = df[df.index >= pd.Timestamp.now() - pd.DateOffset(years=5)]
+                if not df.empty:
+                    all_series[label] = df["price"]
         except Exception:
             pass
 
@@ -1539,6 +1526,18 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
                   analyst_targets=None, analyst_recs=None,
                   selected_firms=None):
 
+    st.markdown("""
+<style>
+.tt { position:relative; cursor:help; border-bottom:1px dotted #888; display:inline-block; }
+.tt .tttext { visibility:hidden; background-color:#1a1a1a; color:#fff; border:1px solid #555;
+              border-radius:6px; padding:8px 12px; position:absolute; z-index:9999;
+              left:0; top:100%; width:380px; font-size:12px; line-height:1.5;
+              white-space:normal; box-shadow:2px 2px 8px rgba(0,0,0,0.5); }
+.tt:hover .tttext { visibility:visible; }
+.tooltip-table-val td, .tooltip-table-qual td { overflow:visible; }                
+</style>
+""", unsafe_allow_html=True)
+
     period_code = PERIOD_MAP[chart_period]
     st.divider()
 
@@ -2120,8 +2119,8 @@ with st.sidebar:
                 st.rerun()
 
     st.divider()
-    st.caption("Built with Claude + yfinance + Plotly")
-    st.caption("Yahoo Finance data — 15-min delay")
+    st.caption("Built with Claude + FMP + Plotly")
+    st.caption("Data provided by Financial Modeling Prep")
 
 
 # Derived state

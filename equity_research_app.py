@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 import json
 import io
@@ -1519,24 +1520,92 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
     return output
 
 
+METRIC_TOOLTIPS = {
+    "1. Trailing P/E":   "Trailing P/E: Current price divided by the last 12 months of actual earnings per share. Lower = cheaper relative to current earnings.",
+    "2. Forward P/E":    "Forward P/E: Current price divided by next 12 months of estimated earnings. Lower = cheaper relative to expected earnings.",
+    "3. EV / EBITDA":    "EV/EBITDA: Enterprise Value divided by Earnings Before Interest, Taxes, Depreciation & Amortization. Useful for comparing companies with different capital structures.",
+    "4. Price / Book":   "Price/Book: Market price divided by book value per share. A ratio below 1.0 means the stock trades below net asset value.",
+    "5. Price / FCF":    "Price/FCF: Market cap divided by Free Cash Flow. Measures how much you pay for each dollar of cash the business generates.",
+    "6. Oper. Margin":   "Operating Margin: Operating Income divided by Revenue. Measures what percentage of revenue becomes operating profit after operating expenses.",
+    "7. ROIC":           "ROIC: Return on Invested Capital = NOPAT / (Equity + Debt - Cash). Measures how efficiently management deploys capital. Above 15% is excellent.",
+    "8. ROE":            "ROE: Return on Equity = Net Income / Shareholders Equity. Measures profitability relative to shareholder investment.",
+    "9. Rev. Growth":    "Revenue Growth: Year-over-year percentage change in total revenue. Measures top-line business momentum.",
+    "10. Debt / Equity": "Debt/Equity: Total Debt divided by Total Shareholders Equity. Measures financial leverage. Higher = more debt relative to equity.",
+    "11. FCF Yield":     "FCF Yield: Free Cash Flow divided by Market Cap. The inverse of Price/FCF. Higher = more cash generated relative to market price.",
+}
+
+# ─── HTML TABLE WITH INLINE HOVER TOOLTIPS ───────────────────
+
+def build_html_table(rows, columns, table_id="table"):
+    TTTEXT_STYLE = (
+        "visibility:hidden;"
+        "position:absolute;"
+        "z-index:9999;"
+        "background:#333333;"
+        "color:#e0e0e0;"
+        "border:1px solid #555;"
+        "border-radius:6px;"
+        "padding:8px 10px;"
+        "width:260px;"
+        "white-space:normal;"
+        "font-size:13px;"
+        "font-family:inherit;"
+        "line-height:1.5;"
+        "top:1.4em;"
+        "left:0;"
+        "box-shadow:0 4px 12px rgba(0,0,0,0.5);"
+    )
+    SPAN_STYLE = "position:relative; cursor:default;"
+    HOVER_ON  = "this.querySelector('.tttext').style.visibility='visible'"
+    HOVER_OFF = "this.querySelector('.tttext').style.visibility='hidden'"
+
+    def make_span(display, tooltip_text):
+        if not tooltip_text:
+            return str(display)
+        return (
+            f"<span style='{SPAN_STYLE}' "
+            f"onmouseover=\"{HOVER_ON}\" "
+            f"onmouseout=\"{HOVER_OFF}\">"
+            f"{display}"
+            f"<span class='tttext' style='{TTTEXT_STYLE}'>{tooltip_text}</span>"
+            f"</span>"
+        )
+
+    html = (
+        "<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap' rel='stylesheet'>"
+        f"<table id='{table_id}' style='width:100%; border-collapse:collapse; font-size:14px; font-family:Inter, sans-serif; background:transparent;'>"
+    )
+    html += "<thead><tr>"
+    for i, col in enumerate(columns):
+        align = "left" if i == 0 else "center"
+        html += f"<th style='text-align:{align}; padding:6px 8px; border-bottom:2px solid rgba(0,0,0,0.15); color:inherit; font-weight:600;'>{col}</th>"
+    html += "</tr></thead><tbody>"
+
+    for i, row in enumerate(rows):
+        bg = "transparent" if i % 2 == 0 else "rgba(0,0,0,0.03)"
+        html += f"<tr style='background:{bg};'>"
+        for j, col in enumerate(columns):
+            align = "left" if j == 0 else "center"
+            if j == 0:
+                display      = row.get("metric", col)
+                tooltip_text = row.get("tooltip", "")
+            else:
+                display      = row.get(col, "—")
+                tooltip_text = row.get(col + "_cell_tooltip", "")
+            cell_content = make_span(display, tooltip_text)
+            html += f"<td style='text-align:{align}; padding:6px 8px; border-bottom:1px solid rgba(0,0,0,0.07); overflow:visible;'>{cell_content}</td>"
+        html += "</tr>"
+
+    html += "</tbody></table>"
+    return html
+
+
 # ─── RENDER FUNCTION ─────────────────────────────────────────
 
 def render_report(report, subject_fund, comps_data, comp_tickers,
                   chart_period, normalize, selected_indices=None,
                   analyst_targets=None, analyst_recs=None,
                   selected_firms=None):
-
-    st.markdown("""
-<style>
-.tt { position:relative; cursor:help; border-bottom:1px dotted #888; display:inline-block; }
-.tt .tttext { visibility:hidden; background-color:#1a1a1a; color:#fff; border:1px solid #555;
-              border-radius:6px; padding:8px 12px; position:absolute; z-index:9999;
-              left:0; top:100%; width:380px; font-size:12px; line-height:1.5;
-              white-space:normal; box-shadow:2px 2px 8px rgba(0,0,0,0.5); }
-.tt:hover .tttext { visibility:visible; }
-.tooltip-table-val td, .tooltip-table-qual td { overflow:visible; }                
-</style>
-""", unsafe_allow_html=True)
 
     period_code = PERIOD_MAP[chart_period]
     st.divider()
@@ -1705,28 +1774,42 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
             ("11. FCF Yield",    "11_fcf_yield"),
         ]
 
-        def build_comp_df(metrics):
-            data = {"Metric": [m[0] for m in metrics]}
-            for t in all_tickers:
-                label = f"★ {t}" if t == report['ticker'] else t
-                d     = all_data.get(t)
-                data[label] = [
-                    d.get(key, "N/A") if d else "N/A"
-                    for _, key in metrics
-                ]
-            return pd.DataFrame(data)
+        def build_html_rows(metrics):
+            rows = []
+            for display_name, key in metrics:
+                row = {
+                    "metric": display_name,
+                    "tooltip": METRIC_TOOLTIPS.get(display_name, "")
+                }
+                for t in all_tickers:
+                    label = f"★ {t}" if t == report['ticker'] else t
+                    d = all_data.get(t)
+                    val = d.get(key, "N/A") if d else "N/A"
+                    row[label] = val
+                    cell_tip = d.get(key + "_cell_tooltip", "") if d else ""
+                    row[label + "_cell_tooltip"] = cell_tip
+                rows.append(row)
+            return rows
 
         comp_c1, comp_c2 = st.columns(2)
+
+        all_tickers_labeled = [f"★ {t}" if t == report['ticker'] else t for t in all_tickers]
+        val_columns = ["Metric"] + all_tickers_labeled
+        qual_columns = ["Metric"] + all_tickers_labeled
+
         with comp_c1:
             st.markdown("**Valuation**")
-            st.dataframe(build_comp_df(metrics_val),
-                         hide_index=True, width='stretch')
+            val_rows = build_html_rows(metrics_val)
+            val_height = 38 + (len(val_rows) * 35)
+            components.html(build_html_table(val_rows, val_columns, "val_table"), height=val_height, scrolling=False)
+
         with comp_c2:
             st.markdown("**Quality & Growth**")
-            st.dataframe(build_comp_df(metrics_qual),
-                         hide_index=True, width='stretch')
+            qual_rows = build_html_rows(metrics_qual)
+            qual_height = 38 + (len(qual_rows) * 35)
+            components.html(build_html_table(qual_rows, qual_columns, "qual_table"), height=qual_height, scrolling=False)
+
         st.caption(f"★ = subject company ({report['ticker']})")
-        st.divider()
 
     # ── Analyst Recommendations ───────────────────────────────
     has_targets = analyst_targets and any(

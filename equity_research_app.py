@@ -230,7 +230,7 @@ def get_fundamentals(ticker):
             "company_name":        p.get("companyName", ticker),
             "sector":              p.get("sector", "N/A"),
             "industry":            p.get("industry", "N/A"),
-            "market_cap":          dollar_b(p.get("mktCap")),
+            "market_cap":          dollar_b(p.get("mktCap") or q.get("marketCap")),
             "fifty_two_week_high": f"${q.get('yearHigh', 0):.2f}" if q.get("yearHigh") else "N/A",
             "fifty_two_week_low":  f"${q.get('yearLow', 0):.2f}"  if q.get("yearLow")  else "N/A",
             "1_trailing_pe":       multiple(r.get("priceToEarningsRatioTTM")),
@@ -2330,6 +2330,14 @@ if generate_btn and ticker_input:
         report = generate_research_report(
             ticker_input, history, summary, status
         )
+
+        if subject_fund and isinstance(subject_fund, dict):
+            computed_overrides = {
+                'market_cap':          subject_fund.get('market_cap',          report.get('market_cap',          'N/A')),
+                'fifty_two_week_high': subject_fund.get('fifty_two_week_high', report.get('fifty_two_week_high', 'N/A')),
+                'fifty_two_week_low':  subject_fund.get('fifty_two_week_low',  report.get('fifty_two_week_low',  'N/A')),
+            }
+            report.update(computed_overrides)
 
         st.session_state.report          = report
         st.session_state.subject_fund    = subject_fund

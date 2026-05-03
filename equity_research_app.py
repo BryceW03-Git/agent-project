@@ -156,16 +156,22 @@ def calc_roic_fmp(ticker):
 
 def get_fundamentals(ticker):
     try:
-        profile_data = fmp_get("/profile", {"symbol": ticker})
-        ratios_data  = fmp_get("/ratios-ttm", {"symbol": ticker})
-        quote_data   = fmp_get("/quote", {"symbol": ticker})
+        profile_data  = fmp_get("/profile",                  {"symbol": ticker})
+        ratios_data   = fmp_get("/ratios-ttm",               {"symbol": ticker})
+        quote_data    = fmp_get("/quote",                    {"symbol": ticker})
+        km_data       = fmp_get("/key-metrics-ttm",          {"symbol": ticker})
+        ig_data       = fmp_get("/income-statement-growth",  {"symbol": ticker, "limit": 1})
+        is_data       = fmp_get("/income-statement",         {"symbol": ticker, "limit": 2})
 
         if not profile_data or len(profile_data) == 0:
             return None
 
-        p = profile_data[0]
-        r = ratios_data[0] if ratios_data and len(ratios_data) > 0 else {}
-        q = quote_data[0] if quote_data and len(quote_data) > 0 else {}
+        p       = profile_data[0]
+        r       = ratios_data[0]  if ratios_data  and len(ratios_data)  > 0 else {}
+        q       = quote_data[0]   if quote_data   and len(quote_data)   > 0 else {}
+        km      = km_data[0]      if km_data      and len(km_data)      > 0 else {}
+        ig      = ig_data[0]      if ig_data      and len(ig_data)      > 0 else {}
+        is_list = is_data         if is_data      and len(is_data)      >= 2 else None
 
         if not p.get("companyName"):
             return None
@@ -181,6 +187,45 @@ def get_fundamentals(ticker):
 
         roic = calc_roic_fmp(ticker)
 
+        def calc_forward_pe(price, income_statements):
+            try:
+                if not income_statements or len(income_statements) < 2:
+                    return "N/A"
+
+                is0 = income_statements[0]
+                is1 = income_statements[1]
+
+                shares0 = is0.get("weightedAverageShsOutDil") or is0.get("weightedAverageShsOut")
+                shares1 = is1.get("weightedAverageShsOutDil") or is1.get("weightedAverageShsOut")
+                ni0 = is0.get("netIncome")
+                ni1 = is1.get("netIncome")
+
+                if not all([shares0, shares1, ni0, ni1]):
+                    return "N/A"
+                if shares0 <= 0 or shares1 <= 0:
+                    return "N/A"
+
+                eps0 = ni0 / shares0
+                eps1 = ni1 / shares1
+
+                if eps0 <= 0 or eps1 <= 0:
+                    return "N/A"
+                if eps1 == 0:
+                    return "N/A"
+
+                eps_growth = (eps0 - eps1) / abs(eps1)
+                forward_eps = eps0 * (1 + eps_growth)
+
+                if forward_eps <= 0:
+                    return "N/A"
+                if not price or price <= 0:
+                    return "N/A"
+
+                fwd_pe = price / forward_eps
+                return f"{fwd_pe:.1f}x"
+            except Exception:
+                return "N/A"
+
         return {
             "company_name":        p.get("companyName", ticker),
             "sector":              p.get("sector", "N/A"),
@@ -189,16 +234,16 @@ def get_fundamentals(ticker):
             "fifty_two_week_high": f"${q.get('yearHigh', 0):.2f}" if q.get("yearHigh") else "N/A",
             "fifty_two_week_low":  f"${q.get('yearLow', 0):.2f}"  if q.get("yearLow")  else "N/A",
             "1_trailing_pe":       multiple(r.get("priceToEarningsRatioTTM")),
-            "2_forward_pe":        multiple(r.get("priceEarningsToGrowthRatioTTM")),
+            "2_forward_pe":        calc_forward_pe(q.get("price"), is_list),
             "3_ev_ebitda":         multiple(r.get("enterpriseValueMultipleTTM")),
             "4_price_to_book":     multiple(r.get("priceToBookRatioTTM")),
             "5_price_to_fcf":      multiple(r.get("priceToFreeCashFlowRatioTTM")),
             "6_operating_margin":  pct(r.get("operatingProfitMarginTTM")),
             "7_roic":              roic,
-            "8_return_on_equity":  pct(r.get("returnOnEquityTTM")),
-            "9_revenue_growth":    pct(r.get("revenueGrowthTTM")),
+            "8_return_on_equity":  pct(km.get("returnOnEquityTTM")),
+            "9_revenue_growth":    pct(ig.get("growthRevenue")),
             "10_debt_to_equity":   multiple(r.get("debtToEquityRatioTTM"), decimals=2),
-            "11_fcf_yield":        pct(r.get("freeCashFlowYieldTTM")),
+            "11_fcf_yield":        pct(km.get("freeCashFlowYieldTTM")),
         }
     except Exception:
         return None
@@ -473,7 +518,7 @@ def build_pdf_chart(subject_ticker, comp_tickers, period,
     if normalize:
         all_series = {k: (v / v.iloc[0] * 100) for k, v in all_series.items()}
 
-    fig, ax = plt.subplots(figsize=(7.5, 3.5), dpi=150)
+    fig, ax = plt.subplots(figsize=(8.1, 3.4), dpi=150)
     ax.set_facecolor("white")
     fig.patch.set_facecolor("white")
 
@@ -514,9 +559,9 @@ def build_pdf_chart(subject_ticker, comp_tickers, period,
     ax.legend(fontsize=7, loc="upper left", framealpha=0.9,
               edgecolor="#cccccc", ncol=min(len(all_series), 4))
 
-    plt.tight_layout()
+    plt.tight_layout(pad=0.3, rect=[0, 0, 1, 1])
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
+    fig.savefig(buf, format="png", dpi=150, bbox_inches=None,
                 facecolor="white")
     plt.close(fig)
     buf.seek(0)
@@ -857,8 +902,8 @@ def generate_pdf(report, subject_fund, comps_data,
             return cmds
 
         n_comps    = len(all_tickers)
-        half_w     = W / 2 - 0.1 * inch
-        metric_col = 0.9 * inch
+        half_w     = W / 2
+        metric_col = 0.75 * inch if n_comps >= 5 else 0.9 * inch
         ticker_col = (half_w - metric_col) / n_comps
         col_widths = [metric_col] + [ticker_col] * n_comps
 
@@ -1522,7 +1567,7 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
 
 METRIC_TOOLTIPS = {
     "1. Trailing P/E":   "Trailing P/E: Current price divided by the last 12 months of actual earnings per share. Lower = cheaper relative to current earnings.",
-    "2. Forward P/E":    "Forward P/E: Current price divided by next 12 months of estimated earnings. Lower = cheaper relative to expected earnings.",
+    "2. Forward P/E":    "Forward P/E: Current price divided by estimated next-year EPS. Estimated EPS applies the most recent year-over-year EPS growth rate to the most recent annual EPS figure. Lower = cheaper relative to expected earnings.",
     "3. EV / EBITDA":    "EV/EBITDA: Enterprise Value divided by Earnings Before Interest, Taxes, Depreciation & Amortization. Useful for comparing companies with different capital structures.",
     "4. Price / Book":   "Price/Book: Market price divided by book value per share. A ratio below 1.0 means the stock trades below net asset value.",
     "5. Price / FCF":    "Price/FCF: Market cap divided by Free Cash Flow. Measures how much you pay for each dollar of cash the business generates.",
@@ -1537,52 +1582,73 @@ METRIC_TOOLTIPS = {
 # ─── HTML TABLE WITH INLINE HOVER TOOLTIPS ───────────────────
 
 def build_html_table(rows, columns, table_id="table"):
-    TTTEXT_STYLE = (
-        "visibility:hidden;"
-        "position:absolute;"
-        "z-index:9999;"
-        "background:#333333;"
-        "color:#e0e0e0;"
-        "border:1px solid #555;"
-        "border-radius:6px;"
-        "padding:8px 10px;"
-        "width:260px;"
-        "white-space:normal;"
-        "font-size:13px;"
-        "font-family:inherit;"
-        "line-height:1.5;"
-        "top:1.4em;"
-        "left:0;"
-        "box-shadow:0 4px 12px rgba(0,0,0,0.5);"
-    )
-    SPAN_STYLE = "position:relative; cursor:default;"
-    HOVER_ON  = "this.querySelector('.tttext').style.visibility='visible'"
-    HOVER_OFF = "this.querySelector('.tttext').style.visibility='hidden'"
+    SPAN_STYLE = "cursor:default;"
+    HOVER_ON  = """
+var tt = document.getElementById('shared-tt');
+var r  = this.getBoundingClientRect();
+var tw = 260, th = 150;
+var l  = r.left;
+var t  = r.bottom + 4;
+if (l + tw > window.innerWidth - 8) l = window.innerWidth - tw - 8;
+if (l < 8) l = 8;
+if (t + th > window.innerHeight - 8) t = r.top - th - 4;
+if (t < 8) t = 8;
+tt.innerHTML = this.dataset.tip;
+tt.style.left = l + 'px';
+tt.style.top  = t + 'px';
+tt.style.visibility = 'visible';
+""".replace('\n', ' ')
+    HOVER_OFF = "document.getElementById('shared-tt').style.visibility='hidden';"
 
     def make_span(display, tooltip_text):
         if not tooltip_text:
             return str(display)
+        safe_tip = tooltip_text.replace("'", "&#39;").replace('"', '&quot;')
         return (
             f"<span style='{SPAN_STYLE}' "
+            f"data-tip='{safe_tip}' "
             f"onmouseover=\"{HOVER_ON}\" "
             f"onmouseout=\"{HOVER_OFF}\">"
             f"{display}"
-            f"<span class='tttext' style='{TTTEXT_STYLE}'>{tooltip_text}</span>"
             f"</span>"
         )
 
+    shared_tooltip = """
+<div id='shared-tt' style='
+    position:fixed;
+    visibility:hidden;
+    z-index:9999;
+    background:#333333;
+    color:#e0e0e0;
+    border:1px solid #555;
+    border-radius:6px;
+    padding:8px 10px;
+    width:260px;
+    white-space:normal;
+    font-size:13px;
+    font-family:inherit;
+    line-height:1.5;
+    box-shadow:0 4px 12px rgba(0,0,0,0.5);
+    pointer-events:none;
+'></div>
+"""
+
     html = (
-        "<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap' rel='stylesheet'>"
-        f"<table id='{table_id}' style='width:100%; border-collapse:collapse; font-size:14px; font-family:Inter, sans-serif; background:transparent;'>"
+        shared_tooltip
+        + "<style>@import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@400;600&display=swap');"
+        "body { margin:0; padding:0; }"
+        "* { font-family: 'Source Sans Pro', sans-serif; font-size: 14px; color: #31333f; }</style>"
+        "<div style='border:1px solid rgba(49,51,63,0.2); border-radius:4px; overflow:hidden;'>"
+        f"<table id='{table_id}' style='width:100%; border-collapse:collapse; background:transparent;'>"
     )
     html += "<thead><tr>"
     for i, col in enumerate(columns):
         align = "left" if i == 0 else "center"
-        html += f"<th style='text-align:{align}; padding:6px 8px; border-bottom:2px solid rgba(0,0,0,0.15); color:inherit; font-weight:600;'>{col}</th>"
+        html += f"<th style='text-align:{align}; padding:6px 8px; background:#fafbfc; border-bottom:1px solid rgba(49,51,63,0.1); color:#808495; font-weight:500;'>{col}</th>"
     html += "</tr></thead><tbody>"
 
     for i, row in enumerate(rows):
-        bg = "transparent" if i % 2 == 0 else "rgba(0,0,0,0.03)"
+        bg = "transparent"
         html += f"<tr style='background:{bg};'>"
         for j, col in enumerate(columns):
             align = "left" if j == 0 else "center"
@@ -1593,10 +1659,10 @@ def build_html_table(rows, columns, table_id="table"):
                 display      = row.get(col, "—")
                 tooltip_text = row.get(col + "_cell_tooltip", "")
             cell_content = make_span(display, tooltip_text)
-            html += f"<td style='text-align:{align}; padding:6px 8px; border-bottom:1px solid rgba(0,0,0,0.07); overflow:visible;'>{cell_content}</td>"
+            html += f"<td style='text-align:{align}; padding:6px 8px; border-bottom:1px solid rgba(0,0,0,0.07); overflow:visible; color:#31333f;'>{cell_content}</td>"
         html += "</tr>"
 
-    html += "</tbody></table>"
+    html += "</tbody></table></div>"
     return html
 
 
@@ -1800,13 +1866,13 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
         with comp_c1:
             st.markdown("**Valuation**")
             val_rows = build_html_rows(metrics_val)
-            val_height = 38 + (len(val_rows) * 35)
+            val_height = 36 + (len(val_rows) * 33)
             components.html(build_html_table(val_rows, val_columns, "val_table"), height=val_height, scrolling=False)
 
         with comp_c2:
             st.markdown("**Quality & Growth**")
             qual_rows = build_html_rows(metrics_qual)
-            qual_height = 38 + (len(qual_rows) * 35)
+            qual_height = 36 + (len(qual_rows) * 33)
             components.html(build_html_table(qual_rows, qual_columns, "qual_table"), height=qual_height, scrolling=False)
 
         st.caption(f"★ = subject company ({report['ticker']})")

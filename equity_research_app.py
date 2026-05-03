@@ -980,7 +980,7 @@ def generate_pdf(report, subject_fund, comps_data,
             analyst_elements.append(analyst_pt_tbl)
             analyst_elements.append(Paragraph(
                 "Price targets represent the aggregate of all price targets "
-                "submitted by analysts to Yahoo Finance.",
+                "submitted by analysts to Financial Modeling Prep.",
                 s_small
             ))
             analyst_elements.append(Spacer(1, 6))
@@ -1030,7 +1030,7 @@ def generate_pdf(report, subject_fund, comps_data,
                 analyst_elements.append(rec_tbl)
                 analyst_elements.append(Paragraph(
                     "Ratings shown as reported by each firm. "
-                    "Last 3 months only. Source: Yahoo Finance.",
+                    "Last 3 months only. Source: Financial Modeling Prep.",
                     s_small
                 ))
 
@@ -1508,7 +1508,7 @@ def build_report_text(r, subject_fundamentals=None, comps_data=None,
         output += f"\n{div}\n  ANALYST RECOMMENDATIONS\n{thin}"
         output += (
             "\n  Price targets represent the aggregate of all price targets "
-            "submitted by analysts to Yahoo Finance.\n"
+            "submitted by analysts to Financial Modeling Prep.\n"
         )
         if mean_t and current:
             upside = ((mean_t - current) / current) * 100
@@ -1886,7 +1886,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     if has_targets or has_recs:
         st.divider()
         st.subheader("Analyst Recommendations")
-        st.caption("Last 3 months | Source: Yahoo Finance | "
+        st.caption("Last 3 months | Source: Financial Modeling Prep | "
                    "Ratings shown as reported by each firm")
 
         if has_targets:
@@ -1922,7 +1922,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
 
             st.caption(
                 "Price targets represent the aggregate of **all** price targets "
-                "submitted by analysts to Yahoo Finance."
+                "submitted by analysts to Financial Modeling Prep."
             )
 
         if has_recs:

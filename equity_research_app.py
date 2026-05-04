@@ -156,13 +156,24 @@ def calc_roic_fmp(ticker):
 
 def get_fundamentals(ticker):
     try:
-        profile_data  = fmp_get("/profile",                  {"symbol": ticker})
-        ratios_data   = fmp_get("/ratios-ttm",               {"symbol": ticker})
-        quote_data    = fmp_get("/quote",                    {"symbol": ticker})
-        km_data       = fmp_get("/key-metrics-ttm",          {"symbol": ticker})
-        ig_data       = fmp_get("/income-statement-growth",  {"symbol": ticker, "limit": 1})
-        is_data       = fmp_get("/income-statement",         {"symbol": ticker, "limit": 2})
-        last_price_data = fmp_get("/historical-price-eod/light", {"symbol": ticker, "limit": 1})
+        from concurrent.futures import ThreadPoolExecutor
+        def _fetch(args):
+            endpoint, params = args
+            return fmp_get(endpoint, params)
+
+        calls = [
+            ("/profile",                  {"symbol": ticker}),
+            ("/ratios-ttm",               {"symbol": ticker}),
+            ("/quote",                    {"symbol": ticker}),
+            ("/key-metrics-ttm",          {"symbol": ticker}),
+            ("/income-statement-growth",  {"symbol": ticker, "limit": 1}),
+            ("/income-statement",         {"symbol": ticker, "limit": 2}),
+            ("/historical-price-eod/light", {"symbol": ticker, "limit": 1}),
+        ]
+        with ThreadPoolExecutor(max_workers=7) as executor:
+            results = list(executor.map(_fetch, calls))
+
+        profile_data, ratios_data, quote_data, km_data, ig_data, is_data, last_price_data = results
 
         if not profile_data or len(profile_data) == 0:
             return None
@@ -236,6 +247,8 @@ def get_fundamentals(ticker):
             "fifty_two_week_high": f"${q.get('yearHigh', 0):.2f}" if q.get("yearHigh") else "N/A",
             "fifty_two_week_low":  f"${q.get('yearLow', 0):.2f}"  if q.get("yearLow")  else "N/A",
             "last_trading_date":   last_trading_date,
+            "price_change":        q.get("change"),
+            "price_change_pct":    q.get("changePercentage"),
 
             "1_trailing_pe":       multiple(r.get("priceToEarningsRatioTTM")),
             "2_forward_pe":        calc_forward_pe(q.get("price"), is_list),
@@ -263,13 +276,16 @@ def validate_ticker(ticker):
 def get_comps_data(comp_tickers):
     valid   = {}
     invalid = []
-    for ticker in comp_tickers:
-        ticker = ticker.upper().strip()
-        result = get_fundamentals(ticker)
-        if result is not None:
-            valid[ticker] = result
-        else:
-            invalid.append(ticker)
+    from concurrent.futures import ThreadPoolExecutor
+    normalized = [t.upper().strip() for t in comp_tickers]
+    def _fetch_comp(t):
+        return t, get_fundamentals(t)
+    with ThreadPoolExecutor(max_workers=len(normalized) or 1) as executor:
+        for t, result in executor.map(_fetch_comp, normalized):
+            if result is not None:
+                valid[t] = result
+            else:
+                invalid.append(t)
     return valid, invalid
 
 
@@ -1784,6 +1800,17 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     with p1:
         st.caption("Current Price")
         st.subheader(f"${report['current_price']:.2f}")
+        change = subject_fund.get("price_change") if subject_fund else None
+        change_pct = subject_fund.get("price_change_pct") if subject_fund else None
+        if change is not None and change_pct is not None:
+            arrow = "▲" if change >= 0 else "▼"
+            color = "green" if change >= 0 else "red"
+            st.markdown(
+                f"<span style='color:{color}; font-size:0.9rem'>"
+                f"{arrow} ${abs(change):.2f} ({change_pct:+.2f}%)"
+                f"</span>",
+                unsafe_allow_html=True
+            )
         last_date = subject_fund.get("last_trading_date") if subject_fund else None
         if last_date:
             from datetime import datetime

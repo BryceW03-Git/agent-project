@@ -1259,6 +1259,7 @@ def gather_market_data(ticker, status):
         response = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=2048,
+            temperature=0,
             system=system_prompt,
             tools=data_tools,
             messages=messages

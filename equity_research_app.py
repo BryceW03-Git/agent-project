@@ -1694,6 +1694,16 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
                   analyst_targets=None, analyst_recs=None,
                   selected_firms=None):
 
+    elapsed = st.session_state.get("_report_elapsed")
+    if elapsed:
+        col_spacer, col_timer = st.columns([8, 2])
+        with col_timer:
+            st.markdown(
+                f"<div style='text-align:right; color:#9ca3af; font-size:0.75rem;'>"
+                f"⏱ Generated in {elapsed}s</div>",
+                unsafe_allow_html=True
+            )
+
     period_code = PERIOD_MAP[chart_period]
     st.divider()
 
@@ -2351,6 +2361,9 @@ if generate_btn and ticker_input:
             )
         comp_tickers = list(comps_data.keys())
 
+    import time
+    _report_start_time = time.time()
+
     with st.status(
         f"Researching {ticker_input}...", expanded=True
     ) as status:
@@ -2392,6 +2405,7 @@ if generate_btn and ticker_input:
         st.session_state.report_ready    = True
 
         status.update(label="Report ready!", state="complete")
+        st.session_state["_report_elapsed"] = round(time.time() - _report_start_time, 1)
 
     # Rerun so the sidebar re-renders with all_firms already in session state,
     # which is required for the analyst firm buttons to appear.

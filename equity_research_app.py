@@ -233,6 +233,7 @@ def get_fundamentals(ticker):
             "market_cap":          dollar_b(p.get("mktCap") or q.get("marketCap")),
             "fifty_two_week_high": f"${q.get('yearHigh', 0):.2f}" if q.get("yearHigh") else "N/A",
             "fifty_two_week_low":  f"${q.get('yearLow', 0):.2f}"  if q.get("yearLow")  else "N/A",
+            "price_timestamp":     q.get("timestamp"),
             "1_trailing_pe":       multiple(r.get("priceToEarningsRatioTTM")),
             "2_forward_pe":        calc_forward_pe(q.get("price"), is_list),
             "3_ev_ebitda":         multiple(r.get("enterpriseValueMultipleTTM")),
@@ -1700,7 +1701,7 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
             _n_bear = int(_rv.apply(lambda r: any(k in r for k in _bear_kws)).sum())
 
     # ROW 1 — company info
-    st.subheader(f"{report['company_name']} ({report['ticker']})")
+    st.subheader(f"{report['company_name']} ({report['ticker']})  —  ${report['current_price']:.2f}")
     st.caption(f"{report['sector']} | {report['industry']}")
 
     # ROW 2 — rating lights: emoji on top, label below
@@ -1779,6 +1780,17 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
     with p1:
         st.caption("Current Price")
         st.subheader(f"${report['current_price']:.2f}")
+        import pytz
+        ts = subject_fund.get("price_timestamp") if subject_fund else None
+        if ts:
+            pst = pytz.timezone("America/Los_Angeles")
+            try:
+                price_time = datetime.fromtimestamp(int(ts), tz=pytz.utc).astimezone(pst)
+                st.caption(f"As of {price_time.strftime('%m/%d/%y @ %I:%M %p')} PST (15-min delay)")
+            except Exception:
+                st.caption("Timestamp unavailable")
+        else:
+            st.caption("Timestamp unavailable")
     with p2:
         st.caption("1-Year Return")
         st.subheader(f"{report['one_year_return_pct']:.1f}%")
@@ -2323,6 +2335,7 @@ if generate_btn and ticker_input:
         subject_fund = get_fundamentals(ticker_input)
         if not isinstance(subject_fund, dict):
             subject_fund = None
+
 
         status.update(label="Fetching analyst recommendations...")
         analyst_targets, analyst_recs = get_analyst_data(ticker_input)

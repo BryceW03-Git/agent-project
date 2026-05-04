@@ -670,6 +670,7 @@ def generate_pdf(report, subject_fund, comps_data,
             ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE",     (0, 0), (-1, 0), 7.5),
             ("ALIGN",        (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
             ("FONTNAME",     (0, 1), (-1, 1), "Helvetica-Bold"),
             ("FONTSIZE",     (0, 1), (-1, 1), 10),
             ("GRID",         (0, 0), (-1, -1), 0.3, colors.HexColor("#dddddd")),
@@ -1010,6 +1011,7 @@ def generate_pdf(report, subject_fund, comps_data,
             analyst_pt_tbl = Table([pt_headers, pt_values],
                                    colWidths=[apt_col_w] * len(pt_headers))
             analyst_pt_tbl.setStyle(header_table_style(2))
+            analyst_pt_tbl.setStyle(TableStyle([("ALIGN", (0, 1), (0, -1), "CENTER")]))
             analyst_elements.append(analyst_pt_tbl)
             analyst_elements.append(Paragraph(
                 "Price targets represent the aggregate of all price targets "
@@ -1708,6 +1710,14 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
                   analyst_targets=None, analyst_recs=None,
                   selected_firms=None):
 
+    st.markdown("""
+<style>
+div[data-testid="column"] [data-testid="stCaptionContainer"] {
+    margin-bottom: -0.6rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
     elapsed = st.session_state.get("_report_elapsed")
     if elapsed:
         col_spacer, col_timer = st.columns([8, 2])
@@ -1820,22 +1830,22 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
 
     # Performance
     st.subheader("Price & Performance")
-    p1, p2, p3, p4, p5 = st.columns([1.4, 1, 1, 1, 1.2])
+    p1, p2, p3, p4, p5 = st.columns(5)
     with p1:
         change = subject_fund.get("price_change") if subject_fund else None
         change_pct = subject_fund.get("price_change_pct") if subject_fund else None
         if change is not None and change_pct is not None:
-            delta_str = f"${abs(change):.2f} ({change_pct:+.2f}%)"
-            if change < 0:
-                delta_str = f"-${abs(change):.2f} ({change_pct:+.2f}%)"
+            delta_str = f"-${abs(change):.2f} ({change_pct:+.2f}%)" if change < 0 else f"${abs(change):.2f} ({change_pct:+.2f}%)"
             st.metric(
                 label="Current Price",
                 value=f"${report['current_price']:.2f}",
                 delta=delta_str
             )
         else:
-            st.caption("Current Price")
-            st.subheader(f"${report['current_price']:.2f}")
+            st.metric(
+                label="Current Price",
+                value=f"${report['current_price']:.2f}"
+            )
         last_date = subject_fund.get("last_trading_date") if subject_fund else None
         if last_date:
             from datetime import datetime
@@ -1844,17 +1854,13 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
         else:
             st.caption("15-min delayed price | Source: FMP")
     with p2:
-        st.caption("1-Year Return")
-        st.subheader(f"{report['one_year_return_pct']:.1f}%")
+        st.metric(label="1-Year Return", value=f"{report['one_year_return_pct']:.1f}%")
     with p3:
-        st.caption("5-Year Return")
-        st.subheader(f"{report['five_year_return_pct']:.1f}%")
+        st.metric(label="5-Year Return", value=f"{report['five_year_return_pct']:.1f}%")
     with p4:
-        st.caption("Market Cap")
-        st.subheader(report['market_cap'])
+        st.metric(label="Market Cap", value=report['market_cap'])
     with p5:
-        st.caption("52-Week Range")
-        st.subheader(f"{report['fifty_two_week_low']} – {report['fifty_two_week_high']}")
+        st.metric(label="52-Week Range", value=f"{report.get('fifty_two_week_low', 'N/A')} – {report.get('fifty_two_week_high', 'N/A')}")
     st.divider()
 
     # Chart
@@ -1968,21 +1974,29 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
 
             a1, a2, a3, a4 = st.columns(4)
             with a1:
-                st.caption("Mean Target")
-                st.subheader(f"${mean_t:.2f}" if mean_t else "N/A")
-                if upside_str(mean_t): st.caption(upside_str(mean_t))
+                st.metric(
+                    label="Mean Target",
+                    value=f"${mean_t:.2f}" if mean_t else "N/A",
+                    delta=upside_str(mean_t) if mean_t else None
+                )
             with a2:
-                st.caption("High Target")
-                st.subheader(f"${high_t:.2f}" if high_t else "N/A")
-                if upside_str(high_t): st.caption(upside_str(high_t))
+                st.metric(
+                    label="High Target",
+                    value=f"${high_t:.2f}" if high_t else "N/A",
+                    delta=upside_str(high_t) if high_t else None
+                )
             with a3:
-                st.caption("Low Target")
-                st.subheader(f"${low_t:.2f}" if low_t else "N/A")
-                if upside_str(low_t): st.caption(upside_str(low_t))
+                st.metric(
+                    label="Low Target",
+                    value=f"${low_t:.2f}" if low_t else "N/A",
+                    delta=upside_str(low_t) if low_t else None
+                )
             with a4:
-                st.caption("Median Target")
-                st.subheader(f"${med_t:.2f}" if med_t else "N/A")
-                if upside_str(med_t): st.caption(upside_str(med_t))
+                st.metric(
+                    label="Median Target",
+                    value=f"${med_t:.2f}" if med_t else "N/A",
+                    delta=upside_str(med_t) if med_t else None
+                )
 
             st.caption(
                 "Price targets represent the aggregate of **all** price targets "

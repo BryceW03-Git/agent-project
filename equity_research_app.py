@@ -1889,8 +1889,11 @@ div[data-testid="column"] [data-testid="stCaptionContainer"] {
     st.divider()
 
     # Comps
-    if comps_data:
-        st.subheader("Top 10 Value Investor Fundamentals & Comparable Analysis")
+    if True:
+        if comps_data:
+            st.subheader("Top 10 Value Investor Fundamentals & Comparable Analysis")
+        else:
+            st.subheader("Top 10 Value Investor Fundamentals")
         all_tickers = [report['ticker']] + list(comps_data.keys())
         all_data    = {report['ticker']: subject_fund, **comps_data}
 
@@ -1945,7 +1948,8 @@ div[data-testid="column"] [data-testid="stCaptionContainer"] {
             qual_height = 36 + (len(qual_rows) * 33)
             components.html(build_html_table(qual_rows, qual_columns, "qual_table"), height=qual_height, scrolling=False)
 
-        st.caption(f"★ = subject company ({report['ticker']})")
+        if comps_data:
+            st.caption(f"★ = subject company ({report['ticker']})")
 
     # ── Analyst Recommendations ───────────────────────────────
     has_targets = analyst_targets and any(

@@ -825,8 +825,21 @@ def generate_pdf(report, subject_fund, comps_data,
     # ── Performance ───────────────────────────────────────────
     perf_headers = ["Current Price", "1-Year Return", "5-Year Return",
                     "Market Cap", "52-Week Range"]
+    _ch     = subject_fund.get("price_change")     if subject_fund else None
+    _ch_pct = subject_fund.get("price_change_pct") if subject_fund else None
+    if _ch is not None and _ch_pct is not None:
+        _arrow    = "▲" if _ch >= 0 else "▼"
+        _ch_color = "#16a34a" if _ch >= 0 else "#dc2626"
+        _price_cell = Paragraph(
+            f"<b>${report['current_price']:.2f}</b><br/>"
+            f"<font size='7' color='{_ch_color}'>{_arrow} ${abs(_ch):.2f} ({_ch_pct:+.2f}%)</font>",
+            style("perf_price", fontSize=10, alignment=TA_CENTER)
+        )
+    else:
+        _price_cell = f"${report['current_price']:.2f}"
+
     perf_values  = [
-        f"${report['current_price']:.2f}",
+        _price_cell,
         f"{report['one_year_return_pct']:.1f}%",
         f"{report['five_year_return_pct']:.1f}%",
         report.get('market_cap', 'N/A'),
@@ -1291,7 +1304,8 @@ def gather_market_data(ticker, status):
         tool_results = []
         for block in response.content:
             if block.type == "tool_use":
-                status.update(label=f"Fetching: {block.name}({block.input})...")
+                if status:
+                    status.update(label=f"Fetching: {block.name}({block.input})...")
                 result     = execute_tool(block.name, block.input)
                 result_str = (
                     json.dumps(result) if isinstance(result, dict)
@@ -1806,21 +1820,22 @@ def render_report(report, subject_fund, comps_data, comp_tickers,
 
     # Performance
     st.subheader("Price & Performance")
-    p1, p2, p3, p4, p5 = st.columns(5)
+    p1, p2, p3, p4, p5 = st.columns([1.4, 1, 1, 1, 1.2])
     with p1:
-        st.caption("Current Price")
-        st.subheader(f"${report['current_price']:.2f}")
         change = subject_fund.get("price_change") if subject_fund else None
         change_pct = subject_fund.get("price_change_pct") if subject_fund else None
         if change is not None and change_pct is not None:
-            arrow = "▲" if change >= 0 else "▼"
-            color = "green" if change >= 0 else "red"
-            st.markdown(
-                f"<span style='color:{color}; font-size:0.9rem'>"
-                f"{arrow} ${abs(change):.2f} ({change_pct:+.2f}%)"
-                f"</span>",
-                unsafe_allow_html=True
+            delta_str = f"${abs(change):.2f} ({change_pct:+.2f}%)"
+            if change < 0:
+                delta_str = f"-${abs(change):.2f} ({change_pct:+.2f}%)"
+            st.metric(
+                label="Current Price",
+                value=f"${report['current_price']:.2f}",
+                delta=delta_str
             )
+        else:
+            st.caption("Current Price")
+            st.subheader(f"${report['current_price']:.2f}")
         last_date = subject_fund.get("last_trading_date") if subject_fund else None
         if last_date:
             from datetime import datetime
@@ -2353,13 +2368,6 @@ if generate_btn and ticker_input:
             c.upper().strip()
             for c in comps_input.split(",") if c.strip()
         ]
-        comps_data, invalid_tickers = get_comps_data(raw_comps)
-        if invalid_tickers:
-            st.warning(
-                f"⚠️ Skipped invalid ticker(s): "
-                f"**{', '.join(invalid_tickers)}**."
-            )
-        comp_tickers = list(comps_data.keys())
 
     import time
     _report_start_time = time.time()
@@ -2368,8 +2376,28 @@ if generate_btn and ticker_input:
         f"Researching {ticker_input}...", expanded=True
     ) as status:
 
-        status.update(label=f"Gathering market data for {ticker_input}...")
-        history, summary = gather_market_data(ticker_input, status)
+        from concurrent.futures import ThreadPoolExecutor
+
+        status.update(label="Gathering market data and fetching comps...")
+
+        def _run_market_data():
+            return gather_market_data(ticker_input, None)
+
+        def _run_comps():
+            if comps_input.strip():
+                return get_comps_data(raw_comps)
+            return {}, []
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_market = executor.submit(_run_market_data)
+            future_comps  = executor.submit(_run_comps)
+            history, summary = future_market.result()
+            comps_data, invalid_tickers = future_comps.result()
+
+        if invalid_tickers:
+            st.warning(f"⚠️ Skipped invalid ticker(s): **{', '.join(invalid_tickers)}**.")
+
+        comp_tickers = list(comps_data.keys())
 
         status.update(label="Fetching subject fundamentals...")
         subject_fund = get_fundamentals(ticker_input)
